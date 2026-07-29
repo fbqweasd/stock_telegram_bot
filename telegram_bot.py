@@ -56,6 +56,7 @@ class TelegramBot:
         Sends a message to the specified chat_id.
         - reply_to_message_id: 특정 메시지에 답장(Reply) 형태로 보냅니다.
         - message_thread_id: Topics(스레드)가 활성화된 그룹에서 특정 스레드에 메시지를 보냅니다.
+        Returns the message_id on success, None on failure.
         """
         payload = {
             "chat_id": chat_id,
@@ -67,7 +68,20 @@ class TelegramBot:
         if message_thread_id is not None:
             payload["message_thread_id"] = message_thread_id
             
-        return self._api_call("sendMessage", payload)
+        result = self._api_call("sendMessage", payload)
+        if result and result.get("ok") and result.get("result"):
+            return result["result"].get("message_id")
+        return None
+
+    def delete_message(self, chat_id, message_id):
+        """
+        Deletes a message by its message_id.
+        """
+        payload = {
+            "chat_id": chat_id,
+            "message_id": message_id
+        }
+        return self._api_call("deleteMessage", payload)
 
     def get_updates(self):
         """
@@ -168,7 +182,10 @@ class TelegramBot:
             "/l": "/list",
             "/predict": "/predict",
             "/예측": "/predict",
-            "/p": "/predict"
+            "/p": "/predict",
+            "/settopic": "/settopic",
+            "/토픽설정": "/settopic",
+            "/topic": "/settopic"
         }
         
         # 명령어 정규화
@@ -186,6 +203,8 @@ class TelegramBot:
             self._handle_list(chat_id, reply_to_message_id, message_thread_id)
         elif normalized_cmd == "/predict":
             self._handle_predict(chat_id, arg, reply_to_message_id, message_thread_id)
+        elif normalized_cmd == "/settopic":
+            self._handle_settopic(chat_id, arg, reply_to_message_id, message_thread_id)
         else:
             self.send_message(chat_id, "⚠️ 알 수 없는 명령어입니다. 사용 가능한 명령어를 보려면 /help 를 입력하세요.",
                             reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
@@ -288,7 +307,8 @@ class TelegramBot:
             )
             return
             
-        self.send_message(chat_id, "🔄 구독 중인 종목들의 현재가를 가져오는 중...",
+        # "가져오는 중..." 메시지를 보내고 message_id를 저장
+        loading_msg_id = self.send_message(chat_id, "🔄 구독 중인 종목들의 현재가를 가져오는 중...",
                         reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
         
         # 한국 시간 (KST = UTC + 9)
@@ -384,8 +404,14 @@ class TelegramBot:
                     lines.append(f"{idx}. <b>{ticker}</b>: {price:.2f} {currency}{change_str}{rec_str}")
                 else:
                     lines.append(f"{idx}. <b>{ticker}</b>: 데이터 로드 실패 ⚠️")
-                
+        
+        # 결과 메시지 전송 후 "가져오는 중..." 메시지 삭제
         self.send_message(chat_id, "\n".join(lines), reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
+        if loading_msg_id:
+            try:
+                self.delete_message(chat_id, loading_msg_id)
+            except Exception:
+                pass
 
     def _handle_predict(self, chat_id, arg, reply_to_message_id=None, message_thread_id=None):
         if not arg:
@@ -394,19 +420,32 @@ class TelegramBot:
             return
             
         ticker = arg.upper().strip()
-        self.send_message(chat_id, f"📊 <code>{html.escape(ticker)}</code> 기술적 지표를 분석하여 매매 가격을 예측하고 있습니다...",
+        # "예측하고 있습니다..." 메시지를 보내고 message_id를 저장
+        loading_msg_id = self.send_message(chat_id, f"📊 <code>{html.escape(ticker)}</code> 기술적 지표를 분석하여 매매 가격을 예측하고 있습니다...",
                         reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
         
         stock_data = stock_api.fetch_stock_data(ticker)
         if not stock_data:
             self.send_message(chat_id, f"❌ <code>{html.escape(ticker)}</code> 데이터를 가져오지 못했습니다. 티커명을 확인하세요.",
                             reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
+            # 실패 시에도 로딩 메시지 삭제
+            if loading_msg_id:
+                try:
+                    self.delete_message(chat_id, loading_msg_id)
+                except Exception:
+                    pass
             return
             
         analysis = predictor.predict_buy_sell_prices(stock_data)
         if "error" in analysis:
             self.send_message(chat_id, f"⚠️ 분석 실패: {html.escape(analysis['error'])}",
                             reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
+            # 실패 시에도 로딩 메시지 삭제
+            if loading_msg_id:
+                try:
+                    self.delete_message(chat_id, loading_msg_id)
+                except Exception:
+                    pass
             return
             
         # Format prediction response
@@ -552,7 +591,77 @@ class TelegramBot:
         #     f"각 지표는 -2.0 ~ +2.0 범위의 점수를 기여하며, 총점을 바탕으로 최종 추천 등급이 결정됩니다.\n"
         # )
         
+        # 결과 전송 후 로딩 메시지 삭제
         self.send_message(chat_id, report_text, reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
+        if loading_msg_id:
+            try:
+                self.delete_message(chat_id, loading_msg_id)
+            except Exception:
+                pass
+
+    def _handle_settopic(self, chat_id, arg, reply_to_message_id=None, message_thread_id=None):
+        """
+        단체방에서 알림을 받을 토픽(스레드)을 설정합니다.
+        사용법:
+          /settopic              - 현재 토픽을 알림 토픽으로 설정
+          /settopic [thread_id]  - 특정 thread_id를 알림 토픽으로 설정
+          /settopic off          - 토픽 설정 해제 (기본 토픽으로 알림)
+        """
+        if not arg:
+            # 인자가 없으면 현재 메시지가 속한 thread_id를 알림 토픽으로 설정
+            if message_thread_id is not None:
+                database.set_chat_topic(chat_id, message_thread_id)
+                self.send_message(
+                    chat_id,
+                    f"✅ 알림 토픽이 현재 토픽(<code>{message_thread_id}</code>)으로 설정되었습니다.\n"
+                    f"이제부터 모든 자동 알림이 이 토픽으로 전송됩니다.",
+                    reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id
+                )
+            else:
+                # 일반 채팅방이거나 토픽이 없는 그룹
+                self.send_message(
+                    chat_id,
+                    "⚠️ 현재 메시지가 토픽(스레드)에 속해 있지 않습니다.\n"
+                    "토픽이 활성화된 그룹의 특정 토픽에서 이 명령어를 사용하거나,\n"
+                    "<code>/settopic [thread_id]</code> 형식으로 직접 thread_id를 지정해 주세요.\n\n"
+                    "💡 thread_id는 토픽 링크에서 확인할 수 있습니다.\n"
+                    "예: <code>/settopic 12345</code>",
+                    reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id
+                )
+            return
+
+        arg_lower = arg.lower().strip()
+        if arg_lower in ("off", "해제", "끄기", "none", "기본"):
+            # 토픽 설정 해제
+            database.clear_chat_topic(chat_id)
+            self.send_message(
+                chat_id,
+                "✅ 알림 토픽 설정이 해제되었습니다.\n"
+                "이제부터 모든 자동 알림이 기본 토픽(General)으로 전송됩니다.",
+                reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id
+            )
+            return
+
+        # 숫자로 된 thread_id 직접 지정
+        try:
+            thread_id = int(arg)
+            database.set_chat_topic(chat_id, thread_id)
+            self.send_message(
+                chat_id,
+                f"✅ 알림 토픽이 <code>{thread_id}</code>(으)로 설정되었습니다.\n"
+                f"이제부터 모든 자동 알림이 이 토픽으로 전송됩니다.",
+                reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id
+            )
+        except ValueError:
+            self.send_message(
+                chat_id,
+                "⚠️ 올바르지 않은 형식입니다.\n"
+                "사용법:\n"
+                "• <code>/settopic</code> - 현재 토픽을 알림 토픽으로 설정\n"
+                "• <code>/settopic [thread_id]</code> - 특정 thread_id 지정\n"
+                "• <code>/settopic off</code> - 토픽 설정 해제",
+                reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id
+            )
 
 if __name__ == "__main__":
     # Local dry run

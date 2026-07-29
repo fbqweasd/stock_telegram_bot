@@ -64,6 +64,15 @@ def init_db():
                 PRIMARY KEY (chat_id, ticker, alert_date)
             )
         """)
+        
+        # Table to store chat notification topic settings (단체방 알림 토픽 설정)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS chat_topics (
+                chat_id INTEGER PRIMARY KEY,
+                message_thread_id INTEGER,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         conn.commit()
 
 def add_subscription(chat_id, ticker):
@@ -350,3 +359,41 @@ def record_daily_alert(chat_id, ticker, alert_date, threshold_pct, direction):
         """, (chat_id, ticker, alert_date, threshold_pct, direction))
         conn.commit()
         return cursor.rowcount > 0
+
+# ================================================================
+# Chat topic settings (단체방 알림 토픽 설정)
+# ================================================================
+
+def set_chat_topic(chat_id, message_thread_id):
+    """
+    Sets the notification topic (message_thread_id) for a chat.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO chat_topics (chat_id, message_thread_id, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+        """, (chat_id, message_thread_id))
+        conn.commit()
+
+def clear_chat_topic(chat_id):
+    """
+    Clears the notification topic setting for a chat (reverts to default/General).
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM chat_topics WHERE chat_id = ?", (chat_id,))
+        conn.commit()
+
+def get_chat_topic(chat_id):
+    """
+    Gets the notification topic (message_thread_id) for a chat.
+    Returns the message_thread_id or None if not set.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT message_thread_id FROM chat_topics WHERE chat_id = ?", (chat_id,))
+        row = cursor.fetchone()
+        if row:
+            return row[0]
+        return None

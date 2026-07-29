@@ -193,7 +193,9 @@ class AlertScheduler:
                         f"💡 실시간 차트 예측 리포트는 <code>/predict {ticker}</code> 를 입력하여 조회하세요!"
                     )
                     
-                    self.bot.send_message(chat_id, alert_text)
+                    # Get chat topic setting for this chat
+                    topic_id = database.get_chat_topic(chat_id)
+                    self.bot.send_message(chat_id, alert_text, message_thread_id=topic_id)
                     # Register that we notified the user
                     database.set_last_signal(chat_id, ticker, sig_type, price_now)
 
@@ -260,7 +262,8 @@ class AlertScheduler:
                     f"💡 상세 분석 리포트는 <code>/predict {ticker}</code> 를 입력하세요!"
                 )
 
-                self.bot.send_message(chat_id, alert_text)
+                topic_id = database.get_chat_topic(chat_id)
+                self.bot.send_message(chat_id, alert_text, message_thread_id=topic_id)
                 database.record_daily_alert(chat_id, ticker, today_str, triggered_threshold,
                                            "up" if pct_change > 0 else "down")
 
