@@ -85,39 +85,45 @@ def predict_buy_sell_prices(stock_data):
     # 1. RSI Score (가중치 2.0)
     if rsi <= 25:
         score += 2.0
-        signals.append("RSI 극단적 과매도")
+        signals.append("RSI 극단적 과매도 (강한 매수 신호)")
     elif rsi <= 30:
         score += 1.5
-        signals.append("RSI 과매도")
+        signals.append("RSI 과매도 (매수 신호)")
     elif rsi <= 40:
         score += 0.5
-        signals.append("RSI 저평가 구간")
-    elif 45 <= rsi <= 55:
+        signals.append("RSI 저평가 구간 (약한 매수 신호)")
+    elif rsi < 45:
+        score += 0.0
+        signals.append("RSI 중립 (약한 저평가)")
+    elif rsi <= 55:
         score += 0.0
         signals.append("RSI 중립")
-    elif 60 <= rsi < 70:
+    elif rsi < 60:
+        score += 0.0
+        signals.append("RSI 중립 (약한 고평가)")
+    elif rsi < 70:
         score -= 0.5
-        signals.append("RSI 고평가 구간")
-    elif rsi >= 70:
+        signals.append("RSI 고평가 구간 (약한 매도 신호)")
+    elif rsi < 75:
         score -= 1.5
-        signals.append("RSI 과매수")
-    elif rsi >= 75:
+        signals.append("RSI 과매수 (매도 신호)")
+    else:
         score -= 2.0
-        signals.append("RSI 극단적 과매수")
+        signals.append("RSI 극단적 과매수 (강한 매도 신호)")
     
     # 2. MACD Score (가중치 2.0)
     if hist_val > 0 and macd_val > 0:
         score += 1.5
-        signals.append("MACD 상승 추세 강화")
+        signals.append("MACD 상승 추세 강화 (매수 신호)")
     elif hist_val > 0 and macd_val < 0:
         score += 1.0
-        signals.append("MACD 반등 시도")
+        signals.append("MACD 반등 시도 (약한 매수 신호)")
     elif hist_val < 0 and macd_val < 0:
         score -= 1.5
-        signals.append("MACD 하락 추세 강화")
+        signals.append("MACD 하락 추세 강화 (매도 신호)")
     elif hist_val < 0 and macd_val > 0:
         score -= 1.0
-        signals.append("MACD 하락 반전")
+        signals.append("MACD 하락 반전 (약한 매도 신호)")
     else:
         score += 0.0
         signals.append("MACD 중립")
@@ -171,16 +177,16 @@ def predict_buy_sell_prices(stock_data):
         prev_close = closes[-2] if len(closes) >= 2 else current_price
         if sma20_val > sma50_val and prev_close <= sma50_val and current_price > sma50_val:
             score += 1.5
-            signals.append("✅ 골든크로스 발생!")
+            signals.append("골든크로스 발생! (SMA20이 SMA50 상향 돌파)")
         elif sma20_val > sma50_val:
             score += 1.0
-            signals.append("단기 > 장기 이동평균 (우상향)")
+            signals.append("SMA20이 SMA50 위 (단기 우상향 추세)")
         elif sma20_val < sma50_val and prev_close >= sma50_val and current_price < sma50_val:
             score -= 1.5
-            signals.append("❌ 데드크로스 발생!")
+            signals.append("데드크로스 발생! (SMA20이 SMA50 하향 돌파)")
         elif sma20_val < sma50_val:
             score -= 1.0
-            signals.append("단기 < 장기 이동평균 (우하향)")
+            signals.append("SMA20이 SMA50 아래 (단기 우하향 추세)")
         else:
             score += 0.0
     
@@ -188,10 +194,10 @@ def predict_buy_sell_prices(stock_data):
     if ema12_val is not None and ema26_val is not None:
         if ema12_val > ema26_val:
             score += 1.0
-            signals.append("EMA12 > EMA26 단기 상승 추세")
+            signals.append("EMA12가 EMA26 위 (단기 상승 추세)")
         else:
             score -= 1.0
-            signals.append("EMA12 < EMA26 단기 하락 추세")
+            signals.append("EMA12가 EMA26 아래 (단기 하락 추세)")
     
     # 7. Volume Trend (가중치 1.0)
     if volume_ratio > 1.5:
