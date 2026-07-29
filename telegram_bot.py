@@ -142,20 +142,42 @@ class TelegramBot:
         """
         Routes the command to the appropriate handler.
         모든 핸들러에 reply_to_message_id와 message_thread_id를 전달합니다.
+        한국어 명령어도 지원합니다.
         """
-        if command == "/start":
+        # 한국어 명령어 매핑
+        command_map = {
+            "/start": "/start",
+            "/시작": "/start",
+            "/help": "/help",
+            "/도움말": "/help",
+            "/add": "/add",
+            "/추가": "/add",
+            "/del": "/del",
+            "/삭제": "/del",
+            "/list": "/list",
+            "/목록": "/list",
+            "/predict": "/predict",
+            "/예측": "/predict",
+            "/setalert": "/setalert",
+            "/알림설정": "/setalert"
+        }
+        
+        # 명령어 정규화
+        normalized_cmd = command_map.get(command, command)
+        
+        if normalized_cmd == "/start":
             self._handle_start(chat_id, reply_to_message_id, message_thread_id)
-        elif command == "/help":
+        elif normalized_cmd == "/help":
             self._handle_help(chat_id, reply_to_message_id, message_thread_id)
-        elif command == "/add":
+        elif normalized_cmd == "/add":
             self._handle_add(chat_id, arg, reply_to_message_id, message_thread_id)
-        elif command == "/del":
+        elif normalized_cmd == "/del":
             self._handle_del(chat_id, arg, reply_to_message_id, message_thread_id)
-        elif command == "/list":
+        elif normalized_cmd == "/list":
             self._handle_list(chat_id, reply_to_message_id, message_thread_id)
-        elif command == "/predict":
+        elif normalized_cmd == "/predict":
             self._handle_predict(chat_id, arg, reply_to_message_id, message_thread_id)
-        elif command == "/setalert":
+        elif normalized_cmd == "/setalert":
             self._handle_setalert(chat_id, arg, reply_to_message_id, message_thread_id)
         else:
             self.send_message(chat_id, "⚠️ 알 수 없는 명령어입니다. 사용 가능한 명령어를 보려면 /help 를 입력하세요.",
@@ -176,15 +198,16 @@ class TelegramBot:
     def _handle_help(self, chat_id, reply_to_message_id=None, message_thread_id=None):
         help_text = (
             "<b>🛠️ 사용 가능한 명령어 목록</b>\n\n"
-            "📌 <b>/add [티커]</b> - 관심 주식을 등록합니다.\n"
-            "<i>예시: /add AAPL (미국), /add 005930.KS (삼성전자)</i>\n\n"
-            "📌 <b>/del [티커]</b> - 관심 주식을 삭제합니다.\n"
-            "<i>예시: /del AAPL</i>\n\n"
-            "📌 <b>/list</b> - 내가 구독 중인 주식 리스트와 현재가를 조회합니다.\n\n"
-            "📌 <b>/predict [티커]</b> - 특정 주식의 기술적 지표 분석 및 매수/매도 예측 가격을 즉시 조회합니다.\n"
-            "<i>예시: /predict TSLA</i>\n\n"
-            "📌 <b>/setalert [티커] [변동%]</b> - 가격 변동 알림 기준을 설정합니다.\n"
-            "<i>예시: /setalert AAPL 5</i>\n\n"
+            "📌 <b>/add [티커]</b> 또는 <b>/추가 [티커]</b> - 관심 주식을 등록합니다.\n"
+            "<i>예시: /add AAPL (미국), /추가 005930.KS (삼성전자)</i>\n\n"
+            "📌 <b>/del [티커]</b> 또는 <b>/삭제 [티커]</b> - 관심 주식을 삭제합니다.\n"
+            "<i>예시: /del AAPL, /삭제 TSLA</i>\n\n"
+            "📌 <b>/list</b> 또는 <b>/목록</b> - 내가 구독 중인 주식 리스트와 현재가를 조회합니다.\n\n"
+            "📌 <b>/predict [티커]</b> 또는 <b>/예측 [티커]</b> - 특정 주식의 기술적 지표 분석 및 매수/매도 예측 가격을 즉시 조회합니다.\n"
+            "<i>예시: /predict TSLA, /예측 AAPL</i>\n\n"
+            "📌 <b>/setalert [티커] [변동%]</b> 또는 <b>/알림설정 [티커] [변동%]</b> - 가격 변동 알림 기준을 설정합니다.\n"
+            "<i>예시: /setalert AAPL 5, /알림설정 005930.KS 3</i>\n\n"
+            "📌 <b>/help</b> 또는 <b>/도움말</b> - 이 도움말을 표시합니다.\n\n"
             "💡 <b>티커 팁:</b>\n"
             "- 미국 주식: 티커명 그대로 입력 (AAPL, TSLA, MSFT)\n"
             "- 한국 코스피: 종목코드.KS 입력 (005930.KS, 000660.KS)\n"
@@ -390,12 +413,34 @@ class TelegramBot:
             
         indicators = analysis["indicators"]
         
+        # 판단 근거 설명 추가
+        signals = analysis.get("signals", [])
+        score = analysis.get("score", 0)
+        
+        # 점수 해석
+        score_interpretation = ""
+        if score >= 4.0:
+            score_interpretation = "매우 강한 매수 신호 (점수: +{:.1f})".format(score)
+        elif score >= 2.0:
+            score_interpretation = "강한 매수 신호 (점수: +{:.1f})".format(score)
+        elif score >= 0.5:
+            score_interpretation = "약한 매수 신호 (점수: +{:.1f})".format(score)
+        elif score <= -4.0:
+            score_interpretation = "매우 강한 매도 신호 (점수: {:.1f})".format(score)
+        elif score <= -2.0:
+            score_interpretation = "강한 매도 신호 (점수: {:.1f})".format(score)
+        elif score <= -0.5:
+            score_interpretation = "약한 매도 신호 (점수: {:.1f})".format(score)
+        else:
+            score_interpretation = "중립 (점수: {:.1f})".format(score)
+        
         report_text = (
             f"<b>📊 [{analysis['ticker']}] 기술적 분석 & 예측 리포트</b>\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"💵 현재가: <b>{analysis['current_price']:.2f} {currency}</b>\n"
             f"📢 추천 등급: <b>{emoji} {rec}</b>\n"
-            f"🎯 예측 신뢰도: <b>{analysis['confidence']}%</b>\n\n"
+            f"🎯 예측 신뢰도: <b>{analysis['confidence']}%</b>\n"
+            f"📊 종합 점수: <b>{score_interpretation}</b>\n\n"
             f"🎯 <b>최적의 매수 목표가:</b>\n"
             f"👉 <code>{analysis['buy_target']:.2f} {currency}</code> 이하 추천\n"
             f"<i>(최근 지지선 & 볼린저 하단 조합)</i>\n\n"
@@ -403,16 +448,26 @@ class TelegramBot:
             f"👉 <code>{analysis['sell_target']:.2f} {currency}</code> 이상 추천\n"
             f"<i>(최근 저항선 & 볼린저 상단 조합)</i>\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
-            f"<b>🔍 주요 실시간 보조지표</b>\n"
+            f"<b>🔍 판단 근거 (8개 지표 분석)</b>\n"
+        )
+        
+        # 신호 설명 추가 (최대 5개)
+        if signals:
+            for i, signal in enumerate(signals[:5], 1):
+                report_text += f"{i}. {signal}\n"
+        else:
+            report_text += "분석된 신호가 없습니다.\n"
+            
+        report_text += (
+            f"\n<b>📈 주요 실시간 보조지표</b>\n"
             f"• <b>RSI (14일):</b> {indicators['rsi']} "
             f"{' (과매수 ⚠️)' if indicators['rsi'] >= 70 else ' (과매도 ⚡)' if indicators['rsi'] <= 30 else ' (보통)'}\n"
-            f"• <b>볼린저 밴드 상단:</b> {indicators['bb_upper']:.2f} {currency}\n"
-            f"• <b>볼린저 밴드 중단 (20선):</b> {indicators['bb_middle']:.2f} {currency}\n"
-            f"• <b>볼린저 밴드 하단:</b> {indicators['bb_lower']:.2f} {currency}\n"
-            f"• <b>최근 20일 지지선:</b> {indicators['support']:.2f} {currency}\n"
-            f"• <b>최근 20일 저항선:</b> {indicators['resistance']:.2f} {currency}\n"
-            f"• <b>변동성 수축계수:</b> {indicators['bandwidth']}\n"
-            f"<i>* 변동성 수축계수가 작을수록 급격한 방향성 돌파가 다가옴을 시사합니다.</i>\n"
+            f"• <b>MACD:</b> {indicators['macd']:.4f} / Histogram: {indicators['macd_histogram']:.4f}\n"
+            f"• <b>모멘텀 (10일):</b> {indicators['momentum']:.2f}%\n"
+            f"• <b>볼린저 밴드:</b> {indicators['bb_lower']:.2f} ~ {indicators['bb_upper']:.2f} {currency}\n"
+            f"• <b>20일선 vs 50일선:</b> {indicators['sma_20']:.2f} vs {indicators['sma_50']:.2f} {currency}\n"
+            f"• <b>지지선/저항선:</b> {indicators['support']:.2f} / {indicators['resistance']:.2f} {currency}\n"
+            f"• <b>거래량 동향:</b> {indicators['volume_ratio']:.2f}x (1.0 = 평균)\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"⚠️ 본 예측치는 단순 보조지표를 바탕으로 한 휴리스틱 연산이며 투자 권유가 아닙니다."
         )
