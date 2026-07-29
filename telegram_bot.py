@@ -521,30 +521,28 @@ class TelegramBot:
         else:
             bb_status = "중앙 (안정적)"
             
-        report_text += (
-            f"\n<b>📈 주요 실시간 보조지표 상세</b>\n"
-            f"• <b>RSI (14일):</b> {rsi_val:.1f} → {rsi_status}\n"
-            f"  RSI는 0~100 사이 값으로, 70 이상이면 과매수(고평가), 30 이하면 과매도(저평가)를 의미합니다.\n"
-            f"• <b>MACD:</b> {macd_val:.4f} / Histogram: {macd_hist:.4f} → {macd_status}\n"
-            f"  MACD가 시그널선 위에 있고 히스토그램이 양수면 상승 추세를 나타냅니다.\n"
-            f"• <b>모멘텀 (10일):</b> {indicators['momentum']:.2f}%\n"
-            f"  10일 전 가격 대비 현재 가격의 변화율로, 양수면 상승 추세입니다.\n"
-            f"• <b>볼린저 밴드:</b> {bb_lower:.2f} ~ {bb_upper:.2f} {currency}\n"
-            f"  현재가 위치: 밴드 {bb_position:.0f}% 지점 → {bb_status}\n"
-            f"• <b>20일선 vs 50일선:</b> {sma20:.2f} vs {sma50:.2f} {currency} → {sma_status}\n"
-            f"  단기 이평선이 장기 이평선 위에 있으면 상승 추세입니다.\n"
-            f"• <b>지지선/저항선:</b> {indicators['support']:.2f} / {indicators['resistance']:.2f} {currency}\n"
-            f"  지지선은 최근 20일 최저가, 저항선은 최근 20일 최고가 기준입니다.\n"
-            f"• <b>거래량 동향:</b> {indicators['volume_ratio']:.2f}x (1.0 = 평균)\n"
-            f"  1.0보다 크면 최근 거래량이 평소보다 많다는 의미입니다.\n"
-            f"━━━━━━━━━━━━━━━━━━━\n"
-            f"<b>💡 예측 로직 설명</b>\n"
-            f"이 예측은 8가지 기술적 지표(RSI, MACD, 모멘텀, 볼린저밴드, SMA, EMA, 거래량, 지지/저항)를\n"
-            f"종합적으로 분석하여 각 지표에 가중치를 부여한 점수 기반 시스템입니다.\n"
-            f"각 지표는 -2.0 ~ +2.0 범위의 점수를 기여하며, 총점을 바탕으로 최종 추천 등급이 결정됩니다.\n\n"
-            f"⚠️ 본 예측치는 단순 보조지표를 바탕으로 한 휴리스틱 연산이며 투자 권유가 아닙니다.\n"
-            f"실제 투자 결정은 본인의 판단과 책임 하에 이루어져야 합니다."
-        )
+        # report_text += (
+        #     f"\n<b>📈 주요 실시간 보조지표 상세</b>\n"
+        #     f"• <b>RSI (14일):</b> {rsi_val:.1f} → {rsi_status}\n"
+        #     f"  RSI는 0~100 사이 값으로, 70 이상이면 과매수(고평가), 30 이하면 과매도(저평가)를 의미합니다.\n"
+        #     f"• <b>MACD:</b> {macd_val:.4f} / Histogram: {macd_hist:.4f} → {macd_status}\n"
+        #     f"  MACD가 시그널선 위에 있고 히스토그램이 양수면 상승 추세를 나타냅니다.\n"
+        #     f"• <b>모멘텀 (10일):</b> {indicators['momentum']:.2f}%\n"
+        #     f"  10일 전 가격 대비 현재 가격의 변화율로, 양수면 상승 추세입니다.\n"
+        #     f"• <b>볼린저 밴드:</b> {bb_lower:.2f} ~ {bb_upper:.2f} {currency}\n"
+        #     f"  현재가 위치: 밴드 {bb_position:.0f}% 지점 → {bb_status}\n"
+        #     f"• <b>20일선 vs 50일선:</b> {sma20:.2f} vs {sma50:.2f} {currency} → {sma_status}\n"
+        #     f"  단기 이평선이 장기 이평선 위에 있으면 상승 추세입니다.\n"
+        #     f"• <b>지지선/저항선:</b> {indicators['support']:.2f} / {indicators['resistance']:.2f} {currency}\n"
+        #     f"  지지선은 최근 20일 최저가, 저항선은 최근 20일 최고가 기준입니다.\n"
+        #     f"• <b>거래량 동향:</b> {indicators['volume_ratio']:.2f}x (1.0 = 평균)\n"
+        #     f"  1.0보다 크면 최근 거래량이 평소보다 많다는 의미입니다.\n"
+        #     f"━━━━━━━━━━━━━━━━━━━\n"
+        #     f"<b>💡 예측 로직 설명</b>\n"
+        #     f"이 예측은 8가지 기술적 지표(RSI, MACD, 모멘텀, 볼린저밴드, SMA, EMA, 거래량, 지지/저항)를\n"
+        #     f"종합적으로 분석하여 각 지표에 가중치를 부여한 점수 기반 시스템입니다.\n"
+        #     f"각 지표는 -2.0 ~ +2.0 범위의 점수를 기여하며, 총점을 바탕으로 최종 추천 등급이 결정됩니다.\n"
+        # )
         
         self.send_message(chat_id, report_text, reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
 
