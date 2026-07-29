@@ -40,6 +40,12 @@ class TelegramBot:
             with urllib.request.urlopen(req, context=self.ssl_context, timeout=25) as response:
                 if response.status == 200:
                     return json.loads(response.read().decode("utf-8"))
+                else:
+                    # Log non-200 responses as well
+                    print(f"Telegram API Error on {method}: HTTP Error {response.status}: {response.read().decode('utf-8')}")
+        except urllib.error.HTTPError as e:
+            # Catch HTTPError specifically to get more details
+            print(f"Telegram API Error on {method}: HTTP Error {e.code}: {e.reason} - {e.file.read().decode('utf-8')}")
         except Exception as e:
             print(f"Telegram API Error on {method}: {e}")
         return None
