@@ -1,0 +1,312 @@
+import urllib.request
+import urllib.parse
+import json
+import ssl
+import time
+import threading
+from config import TELEGRAM_BOT_TOKEN
+import database
+import stock_api
+import predictor
+
+class TelegramBot:
+    def __init__(self):
+        self.token = TELEGRAM_BOT_TOKEN
+        self.base_url = f"https://api.telegram.org/bot{self.token}"
+        self.offset = None
+        self.is_running = False
+        self.ssl_context = ssl.create_default_context()
+        self.ssl_context.check_hostname = False
+        self.ssl_context.verify_mode = ssl.CERT_NONE
+        
+    def _api_call(self, method, data=None):
+        """
+        Helper method to make HTTP requests to the Telegram Bot API.
+        """
+        if not self.token:
+            print("Telegram Bot Token is not configured. API call skipped.")
+            return None
+            
+        url = f"{self.base_url}/{method}"
+        headers = {"Content-Type": "application/json"}
+        
+        req_data = None
+        if data:
+            req_data = json.dumps(data).encode("utf-8")
+            
+        req = urllib.request.Request(url, data=req_data, headers=headers, method="POST" if data else "GET")
+        
+        try:
+            with urllib.request.urlopen(req, context=self.ssl_context, timeout=25) as response:
+                if response.status == 200:
+                    return json.loads(response.read().decode("utf-8"))
+        except Exception as e:
+            print(f"Telegram API Error on {method}: {e}")
+        return None
+
+    def send_message(self, chat_id, text, parse_mode="HTML"):
+        """
+        Sends a message to the specified chat_id.
+        """
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": parse_mode
+        }
+        return self._api_call("sendMessage", payload)
+
+    def get_updates(self):
+        """
+        Retrieves new messages via Long Polling.
+        """
+        payload = {"timeout": 20}
+        if self.offset is not None:
+            payload["offset"] = self.offset
+            
+        updates = self._api_call("getUpdates", payload)
+        if updates and updates.get("ok"):
+            return updates.get("result", [])
+        return []
+
+    def start_polling(self):
+        """
+        Starts the long polling thread.
+        """
+        if not self.token:
+            print("Cannot start Telegram Bot: TELEGRAM_BOT_TOKEN is empty.")
+            return
+            
+        self.is_running = True
+        self.polling_thread = threading.Thread(target=self._poll_loop, daemon=True)
+        self.polling_thread.start()
+        print("Telegram Bot Polling Thread Started.")
+
+    def stop_polling(self):
+        """
+        Stops the long polling thread.
+        """
+        self.is_running = False
+        print("Stopping Telegram Bot Polling...")
+
+    def _poll_loop(self):
+        """
+        Infinite polling loop running in the background thread.
+        """
+        while self.is_running:
+            try:
+                updates = self.get_updates()
+                for update in updates:
+                    self.offset = update["update_id"] + 1
+                    
+                    if "message" in update:
+                        self._handle_message(update["message"])
+            except Exception as e:
+                print(f"Error in Polling Loop: {e}")
+                time.sleep(5)  # Rest before retrying to prevent aggressive loops
+            time.sleep(0.5)
+
+    def _handle_message(self, message):
+        """
+        Processes incoming messages and dispatches commands.
+        """
+        chat_id = message.get("chat", {}).get("id")
+        text = message.get("text", "").strip()
+        
+        if not chat_id or not text:
+            return
+            
+        if text.startswith("/"):
+            parts = text.split(maxsplit=1)
+            command = parts[0].lower()
+            arg = parts[1].strip() if len(parts) > 1 else ""
+            
+            self._dispatch_command(chat_id, command, arg)
+
+    def _dispatch_command(self, chat_id, command, arg):
+        """
+        Routes the command to the appropriate handler.
+        """
+        if command == "/start":
+            self._handle_start(chat_id)
+        elif command == "/help":
+            self._handle_help(chat_id)
+        elif command == "/add":
+            self._handle_add(chat_id, arg)
+        elif command == "/del":
+            self._handle_del(chat_id, arg)
+        elif command == "/list":
+            self._handle_list(chat_id)
+        elif command == "/predict":
+            self._handle_predict(chat_id, arg)
+        else:
+            self.send_message(chat_id, "⚠️ 알 수 없는 명령어입니다. 사용 가능한 명령어를 보려면 /help 를 입력하세요.")
+
+    def _handle_start(self, chat_id):
+        welcome_text = (
+            "<b>📈 주식 모니터링 & 알림 봇에 오신 것을 환영합니다!</b>\n\n"
+            "이 봇은 등록하신 관심 주식을 주기적으로 모니터링하여 "
+            "<b>20일선 이탈, 볼린저 밴드 하단 돌파, RSI 과매수/과매도</b> 등 "
+            "주요 기술적 이벤트 발생 시 자동으로 알림을 전송해 줍니다.\n\n"
+            "또한, 순수 기술적 지표들을 종합 분석하여 최적의 매수/매도 가격과 "
+            "매매 추천 정보를 언제든지 바로 예측해서 제공합니다.\n\n"
+            "<b>ℹ️ 시작하려면 /help 를 입력하여 사용 가능한 명령어 목록을 확인하세요!</b>"
+        )
+        self.send_message(chat_id, welcome_text)
+
+    def _handle_help(self, chat_id):
+        help_text = (
+            "<b>🛠️ 사용 가능한 명령어 목록</b>\n\n"
+            "📌 <b>/add [티커]</b> - 관심 주식을 등록합니다.\n"
+            "<i>예시: /add AAPL (미국), /add 005930.KS (삼성전자)</i>\n\n"
+            "📌 <b>/del [티커]</b> - 관심 주식을 삭제합니다.\n"
+            "<i>예시: /del AAPL</i>\n\n"
+            "📌 <b>/list</b> - 내가 구독 중인 주식 리스트와 현재가를 조회합니다.\n\n"
+            "📌 <b>/predict [티커]</b> - 특정 주식의 기술적 지표 분석 및 매수/매도 예측 가격을 즉시 조회합니다.\n"
+            "<i>예시: /predict TSLA</i>\n\n"
+            "💡 <b>티커 팁:</b>\n"
+            "- 미국 주식: 티커명 그대로 입력 (AAPL, TSLA, MSFT)\n"
+            "- 한국 코스피: 종목코드.KS 입력 (005930.KS, 000660.KS)\n"
+            "- 한국 코스닥: 종목코드.KQ 입력 (247540.KQ)"
+        )
+        self.send_message(chat_id, help_text)
+
+    def _handle_add(self, chat_id, arg):
+        if not arg:
+            self.send_message(chat_id, "⚠️ 사용법: <code>/add [티커]</code> 형태로 입력해 주세요.\n예시: <code>/add AAPL</code>")
+            return
+            
+        ticker = arg.upper().strip()
+        self.send_message(chat_id, f"🔍 <code>{ticker}</code>의 유효성을 검증하는 중입니다...")
+        
+        # Validate stock ticker from API
+        stock_data = stock_api.fetch_stock_data(ticker)
+        if not stock_data:
+            self.send_message(
+                chat_id, 
+                f"❌ <code>{ticker}</code>는 유효하지 않은 티커이거나 데이터를 가져올 수 없습니다.\n"
+                f"티커명이 올바른지 확인해 주세요. (예: AAPL, 005930.KS)"
+            )
+            return
+            
+        # Add to database
+        success = database.add_subscription(chat_id, ticker)
+        if success:
+            self.send_message(
+                chat_id, 
+                f"✅ <code>{ticker}</code> ({stock_data['currency']})가 성공적으로 등록되었습니다!\n"
+                f"실시간 현재가: <b>{stock_data['current_price']:.2f} {stock_data['currency']}</b>\n"
+                f"주기적으로 주가를 검사하여 특이사항 발생 시 알림을 보내드릴게요."
+            )
+        else:
+            self.send_message(chat_id, f"ℹ️ <code>{ticker}</code>는 이미 등록된 관심 주식입니다.")
+
+    def _handle_del(self, chat_id, arg):
+        if not arg:
+            self.send_message(chat_id, "⚠️ 사용법: <code>/del [티커]</code> 형태로 입력해 주세요.\n예시: <code>/del AAPL</code>")
+            return
+            
+        ticker = arg.upper().strip()
+        success = database.remove_subscription(chat_id, ticker)
+        
+        if success:
+            # Clear signal history to free up memory
+            database.clear_all_signals_for_ticker(chat_id, ticker)
+            self.send_message(chat_id, f"✅ <code>{ticker}</code>가 관심 주식에서 성공적으로 삭제되었습니다.")
+        else:
+            self.send_message(chat_id, f"⚠️ 등록되지 않은 티커입니다. 등록 정보는 <b>/list</b> 명령어로 확인해 보세요.")
+
+    def _handle_list(self, chat_id):
+        subscriptions = database.get_user_subscriptions(chat_id)
+        if not subscriptions:
+            self.send_message(
+                chat_id, 
+                "📂 구독 중인 관심 주식이 없습니다.\n"
+                "<code>/add [티커]</code> 명령어로 먼저 등록해 보세요!"
+            )
+            return
+            
+        self.send_message(chat_id, "🔄 구독 중인 종목들의 현재가를 가져오는 중...")
+        
+        lines = ["<b>📋 나의 관심 주식 리스트</b>\n"]
+        for idx, ticker in enumerate(subscriptions, 1):
+            data = stock_api.fetch_stock_data(ticker)
+            if data:
+                lines.append(f"{idx}. <b>{ticker}</b>: {data['current_price']:.2f} {data['currency']}")
+            else:
+                lines.append(f"{idx}. <b>{ticker}</b>: 데이터 로드 실패 ⚠️")
+                
+        self.send_message(chat_id, "\n".join(lines))
+
+    def _handle_predict(self, chat_id, arg):
+        if not arg:
+            self.send_message(chat_id, "⚠️ 사용법: <code>/predict [티커]</code> 형태로 입력해 주세요.\n예시: <code>/predict TSLA</code>")
+            return
+            
+        ticker = arg.upper().strip()
+        self.send_message(chat_id, f"📊 <code>{ticker}</code> 기술적 지표를 분석하여 매매 가격을 예측하고 있습니다...")
+        
+        stock_data = stock_api.fetch_stock_data(ticker)
+        if not stock_data:
+            self.send_message(chat_id, f"❌ <code>{ticker}</code> 데이터를 가져오지 못했습니다. 티커명을 확인하세요.")
+            return
+            
+        analysis = predictor.predict_buy_sell_prices(stock_data)
+        if "error" in analysis:
+            self.send_message(chat_id, f"⚠️ 분석 실패: {analysis['error']}")
+            return
+            
+        # Format prediction response
+        currency = analysis["currency"]
+        rec = analysis["recommendation"]
+        
+        # Color rating decoration
+        emoji = "⚪"
+        if "STRONG BUY" in rec:
+            emoji = "🟢🔥"
+        elif "BUY" in rec:
+            emoji = "🟢"
+        elif "STRONG SELL" in rec:
+            emoji = "🔴🔥"
+        elif "SELL" in rec:
+            emoji = "🔴"
+        else:
+            emoji = "🟡"
+            
+        indicators = analysis["indicators"]
+        
+        report_text = (
+            f"<b>📊 [{analysis['ticker']}] 기술적 분석 & 예측 리포트</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"💵 현재가: <b>{analysis['current_price']:.2f} {currency}</b>\n"
+            f"📢 추천 등급: <b>{emoji} {rec}</b>\n"
+            f"🎯 예측 신뢰도: <b>{analysis['confidence']}%</b>\n\n"
+            f"🎯 <b>최적의 매수 목표가:</b>\n"
+            f"👉 <code>{analysis['buy_target']:.2f} {currency}</code> 이하 추천\n"
+            f"<i>(최근 지지선 & 볼린저 하단 조합)</i>\n\n"
+            f"🎯 <b>최적의 매도 목표가:</b>\n"
+            f"👉 <code>{analysis['sell_target']:.2f} {currency}</code> 이상 추천\n"
+            f"<i>(최근 저항선 & 볼린저 상단 조합)</i>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>🔍 주요 실시간 보조지표</b>\n"
+            f"• <b>RSI (14일):</b> {indicators['rsi']} "
+            f"{' (과매수 ⚠️)' if indicators['rsi'] >= 70 else ' (과매도 ⚡)' if indicators['rsi'] <= 30 else ' (보통)'}\n"
+            f"• <b>볼린저 밴드 상단:</b> {indicators['bb_upper']:.2f} {currency}\n"
+            f"• <b>볼린저 밴드 중단 (20선):</b> {indicators['bb_middle']:.2f} {currency}\n"
+            f"• <b>볼린저 밴드 하단:</b> {indicators['bb_lower']:.2f} {currency}\n"
+            f"• <b>최근 20일 지지선:</b> {indicators['support']:.2f} {currency}\n"
+            f"• <b>최근 20일 저항선:</b> {indicators['resistance']:.2f} {currency}\n"
+            f"• <b>변동성 수축계수:</b> {indicators['bandwidth']}\n"
+            f"<i>* 변동성 수축계수가 작을수록 급격한 방향성 돌파가 다가옴을 시사합니다.</i>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ 본 예측치는 단순 보조지표를 바탕으로 한 휴리스틱 연산이며 투자 권유가 아닙니다."
+        )
+        
+        self.send_message(chat_id, report_text)
+
+if __name__ == "__main__":
+    # Local dry run
+    bot = TelegramBot()
+    # It won't actually poll if TOKEN is empty, but will print info.
+    bot.start_polling()
+    time.sleep(2)
+    bot.stop_polling()
