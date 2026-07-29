@@ -231,11 +231,17 @@ class TelegramBot:
         
         lines = ["<b>📋 나의 관심 주식 리스트</b>\n"]
         for idx, ticker in enumerate(subscriptions, 1):
-            data = stock_api.fetch_stock_data(ticker)
-            if data:
-                lines.append(f"{idx}. <b>{ticker}</b>: {data['current_price']:.2f} {data['currency']}")
+            # 빠른 현재가 조회 (프리장/애프터장 포함)
+            price_data = stock_api.fetch_current_price_only(ticker)
+            if price_data:
+                lines.append(f"{idx}. <b>{ticker}</b>: {price_data['price']:.2f} {price_data['currency']}")
             else:
-                lines.append(f"{idx}. <b>{ticker}</b>: 데이터 로드 실패 ⚠️")
+                # fallback: 전체 데이터 조회
+                data = stock_api.fetch_stock_data(ticker)
+                if data:
+                    lines.append(f"{idx}. <b>{ticker}</b>: {data['current_price']:.2f} {data['currency']}")
+                else:
+                    lines.append(f"{idx}. <b>{ticker}</b>: 데이터 로드 실패 ⚠️")
                 
         self.send_message(chat_id, "\n".join(lines))
 
