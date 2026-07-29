@@ -159,12 +159,16 @@ class TelegramBot:
             "/도움말": "/help",
             "/add": "/add",
             "/추가": "/add",
+            "/a": "/add",
             "/del": "/del",
+            "/d": "/del",
             "/삭제": "/del",
             "/list": "/list",
             "/목록": "/list",
+            "/l": "/list",
             "/predict": "/predict",
-            "/예측": "/predict"
+            "/예측": "/predict",
+            "/p": "/predict"
         }
         
         # 명령어 정규화
