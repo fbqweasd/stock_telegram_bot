@@ -33,10 +33,11 @@ def _make_request(url, retries=3, delay=2):
 def _get_realtime_price(ticker):
     """
     1분봉 + 5분봉 차트에서 마지막 유효 가격을 찾습니다.
-    프리장(PRE) / 정규장(REGULAR) / 애프터장(POST) 모든 시간대의 가격을 반영합니다.
+    프리장(PRE) / 정규장(REGULAR) / 애프터장(POST) 모든 시간대 반영.
+    데이터가 없으면 전날 종가로 fallback합니다.
     
-    1순위: 1분봉(range=1d) - 프리마켓 데이터 포함, 가장 정확한 실시간 값
-    2순위: 5분봉(range=5d) - 장 마감 후/주말 등 1분봉 데이터 없을 때 fallback
+    1순위: 1분봉(range=2d, interval=1m)
+    2순위: 5분봉(range=5d, interval=5m) - 1분봉 실패 시 fallback
     
     반환: (current_price, previous_close, currency, market_state)
     """
@@ -49,9 +50,6 @@ def _get_realtime_price(ticker):
     
     # ================================================================
     # 1순위: 1분봉 (range=2d, interval=1m)
-    # - 프리마켓(오전 4시~9시30분 ET) 데이터 포함
-    # - 정규장 실시간 데이터
-    # - 애프터마켓(오후 4시~8시 ET) 데이터 포함
     # ================================================================
     url_1m = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=2d&interval=1m"
     data_1m = _make_request(url_1m)
@@ -69,10 +67,10 @@ def _get_realtime_price(ticker):
                             meta.get("previousClose") or 
                             meta.get("regularMarketPreviousClose"))
             
-            # 현재가: meta.regularMarketPrice (가장 정확)
+            # 현재가: meta.regularMarketPrice
             current_price = meta.get("regularMarketPrice")
             
-            # 현재가: 1분봉 마지막 유효 close (프리장/애프터장 포함)
+            # 현재가: 1분봉 마지막 유효 close
             if current_price is None:
                 closes = result.get("indicators", {}).get("quote", [{}])[0].get("close", [])
                 for i in range(len(closes) - 1, -1, -1):

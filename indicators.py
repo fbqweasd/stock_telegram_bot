@@ -18,6 +18,27 @@ def calculate_sma(prices, period=20):
         
     return sma
 
+
+def calculate_ema(prices, period=20):
+    """
+    Calculates Exponential Moving Average (EMA) of a list of prices.
+    Returns a list of EMAs. The first (period - 1) elements will be None.
+    """
+    if len(prices) < period:
+        return [None] * len(prices)
+    
+    ema = [None] * len(prices)
+    multiplier = 2 / (period + 1)
+    
+    # SMA for the first EMA value
+    ema[period - 1] = sum(prices[:period]) / period
+    
+    for i in range(period, len(prices)):
+        ema[i] = (prices[i] - ema[i - 1]) * multiplier + ema[i - 1]
+    
+    return ema
+
+
 def calculate_bollinger_bands(prices, period=20, num_std=2):
     """
     Calculates Bollinger Bands (Upper, Middle/SMA, Lower) of a list of prices.
@@ -41,6 +62,7 @@ def calculate_bollinger_bands(prices, period=20, num_std=2):
         lower_band[i] = mean - (num_std * std_dev)
         
     return upper_band, sma, lower_band
+
 
 def calculate_rsi(prices, period=14):
     """
@@ -84,6 +106,75 @@ def calculate_rsi(prices, period=14):
             rsi[i] = 100 - (100 / (1 + rs))
             
     return rsi
+
+
+def calculate_macd(prices, fast=12, slow=26, signal=9):
+    """
+    Calculates MACD (Moving Average Convergence Divergence).
+    Returns (macd_line, signal_line, histogram).
+    First (slow - 1 + signal - 1) elements will be None.
+    """
+    if len(prices) < slow + signal:
+        return [None] * len(prices), [None] * len(prices), [None] * len(prices)
+    
+    fast_ema = calculate_ema(prices, fast)
+    slow_ema = calculate_ema(prices, slow)
+    
+    macd_line = [None] * len(prices)
+    for i in range(len(prices)):
+        if fast_ema[i] is not None and slow_ema[i] is not None:
+            macd_line[i] = fast_ema[i] - slow_ema[i]
+    
+    # Signal line = EMA of MACD line
+    signal_line = calculate_ema(macd_line, signal)
+    
+    # Histogram = MACD - Signal
+    histogram = [None] * len(prices)
+    for i in range(len(prices)):
+        if macd_line[i] is not None and signal_line[i] is not None:
+            histogram[i] = macd_line[i] - signal_line[i]
+    
+    return macd_line, signal_line, histogram
+
+
+def calculate_momentum(prices, period=10):
+    """
+    Calculates price momentum (rate of change).
+    Returns a list of momentum values. First 'period' elements will be None.
+    """
+    if len(prices) < period + 1:
+        return [None] * len(prices)
+    
+    momentum = [None] * len(prices)
+    for i in range(period, len(prices)):
+        if prices[i - period] != 0:
+            momentum[i] = ((prices[i] - prices[i - period]) / prices[i - period]) * 100
+        else:
+            momentum[i] = 0
+    
+    return momentum
+
+
+def calculate_volume_trend(volumes, period=20):
+    """
+    Analyzes volume trend. Returns the average volume ratio.
+    > 1.0 means recent volume is higher than average (increased activity)
+    < 1.0 means recent volume is lower than average (decreased activity)
+    """
+    if len(volumes) < period + 5:
+        return 1.0
+    
+    recent = volumes[-5:]  # last 5 days
+    historical = volumes[-(period + 5):-5]  # previous 'period' days
+    
+    avg_recent = sum(recent) / len(recent)
+    avg_historical = sum(historical) / len(historical)
+    
+    if avg_historical == 0:
+        return 1.0
+    
+    return avg_recent / avg_historical
+
 
 def find_support_resistance(highs, lows, period=20):
     """

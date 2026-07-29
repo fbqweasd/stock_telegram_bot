@@ -280,7 +280,29 @@ class TelegramBot:
                     else:
                         change_str = f" (📉 <b>{pct_change:.2f}%</b>)"
                 
-                lines.append(f"{idx}. <b>{ticker}</b>: {price:.2f} {currency}{change_str}")
+                # 추천 등급 조회 (predictor 사용)
+                rec_str = ""
+                try:
+                    full_data = stock_api.fetch_stock_data(ticker)
+                    if full_data:
+                        analysis = predictor.predict_buy_sell_prices(full_data)
+                        if "error" not in analysis:
+                            rec = analysis["recommendation"]
+                            conf = analysis["confidence"]
+                            if "STRONG BUY" in rec:
+                                rec_str = f" 🟢🔥 <b>{rec}</b> ({conf}%)"
+                            elif "BUY" in rec:
+                                rec_str = f" 🟢 <b>{rec}</b> ({conf}%)"
+                            elif "STRONG SELL" in rec:
+                                rec_str = f" 🔴🔥 <b>{rec}</b> ({conf}%)"
+                            elif "SELL" in rec:
+                                rec_str = f" 🔴 <b>{rec}</b> ({conf}%)"
+                            else:
+                                rec_str = f" 🟡 <b>{rec}</b> ({conf}%)"
+                except Exception:
+                    pass
+                
+                lines.append(f"{idx}. <b>{ticker}</b>: {price:.2f} {currency}{change_str}{rec_str}")
             else:
                 # fallback: 전체 데이터 조회
                 data = stock_api.fetch_stock_data(ticker)
@@ -299,7 +321,27 @@ class TelegramBot:
                         else:
                             change_str = f" (📉 <b>{pct_change:.2f}%</b>)"
                     
-                    lines.append(f"{idx}. <b>{ticker}</b>: {price:.2f} {currency}{change_str}")
+                    # 추천 등급 조회
+                    rec_str = ""
+                    try:
+                        analysis = predictor.predict_buy_sell_prices(data)
+                        if "error" not in analysis:
+                            rec = analysis["recommendation"]
+                            conf = analysis["confidence"]
+                            if "STRONG BUY" in rec:
+                                rec_str = f" 🟢🔥 <b>{rec}</b> ({conf}%)"
+                            elif "BUY" in rec:
+                                rec_str = f" 🟢 <b>{rec}</b> ({conf}%)"
+                            elif "STRONG SELL" in rec:
+                                rec_str = f" 🔴🔥 <b>{rec}</b> ({conf}%)"
+                            elif "SELL" in rec:
+                                rec_str = f" 🔴 <b>{rec}</b> ({conf}%)"
+                            else:
+                                rec_str = f" 🟡 <b>{rec}</b> ({conf}%)"
+                    except Exception:
+                        pass
+                    
+                    lines.append(f"{idx}. <b>{ticker}</b>: {price:.2f} {currency}{change_str}{rec_str}")
                 else:
                     lines.append(f"{idx}. <b>{ticker}</b>: 데이터 로드 실패 ⚠️")
                 
