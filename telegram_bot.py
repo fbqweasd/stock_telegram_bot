@@ -138,6 +138,8 @@ class TelegramBot:
             self._handle_list(chat_id)
         elif command == "/predict":
             self._handle_predict(chat_id, arg)
+        elif command == "/setalert":
+            self._handle_setalert(chat_id, arg)
         else:
             self.send_message(chat_id, "⚠️ 알 수 없는 명령어입니다. 사용 가능한 명령어를 보려면 /help 를 입력하세요.")
 
@@ -302,6 +304,66 @@ class TelegramBot:
         )
         
         self.send_message(chat_id, report_text)
+
+    def _handle_setalert(self, chat_id, arg):
+        """
+        Sets a custom price change alert threshold (%) for a subscribed ticker.
+        Usage: /setalert [티커] [퍼센트]
+        Example: /setalert AAPL 5
+        """
+        if not arg:
+            self.send_message(
+                chat_id,
+                "⚠️ 사용법: <code>/setalert [티커] [변동%]</code> 형태로 입력해 주세요.\n\n"
+                "예시:\n"
+                "<code>/setalert AAPL 5</code> - AAPL이 5% 이상 변동 시 알림\n"
+                "<code>/setalert 005930.KS 3</code> - 삼성전자 3% 이상 변동 시 알림\n\n"
+                "📌 현재 설정된 알림 기준은 <code>/list</code> 명령어로 확인 가능합니다."
+            )
+            return
+
+        parts = arg.split()
+        if len(parts) != 2:
+            self.send_message(
+                chat_id,
+                "⚠️ 티커와 퍼센트 값을 모두 입력해 주세요.\n"
+                "예시: <code>/setalert AAPL 5</code>"
+            )
+            return
+
+        ticker = parts[0].upper().strip()
+        try:
+            threshold = float(parts[1].strip())
+            if threshold <= 0 or threshold > 100:
+                self.send_message(chat_id, "⚠️ 변동%는 1~100 사이의 값을 입력해 주세요.")
+                return
+        except ValueError:
+            self.send_message(chat_id, "⚠️ 변동%는 숫자로 입력해 주세요. (예: 5, 3.5, 10)")
+            return
+
+        # Check if user is subscribed to this ticker
+        subscriptions = database.get_user_subscriptions(chat_id)
+        if ticker not in subscriptions:
+            self.send_message(
+                chat_id,
+                f"⚠️ <code>{ticker}</code>는 등록되지 않은 티커입니다.\n"
+                f"먼저 <code>/add {ticker}</code> 명령어로 등록해 주세요."
+            )
+            return
+
+        # Set the threshold
+        success = database.set_alert_threshold(chat_id, ticker, threshold)
+        if success:
+            self.send_message(
+                chat_id,
+                f"✅ <code>{ticker}</code>의 가격 변동 알림 기준이 <b>{threshold:.1f}%</b>로 설정되었습니다.\n"
+                f"이제 {ticker}의 가격이 기준가 대비 {threshold:.1f}% 이상 변동하면 알림을 보내드립니다."
+            )
+        else:
+            self.send_message(
+                chat_id,
+                f"⚠️ <code>{ticker}</code>의 알림 기준 설정에 실패했습니다. 다시 시도해 주세요."
+            )
 
 if __name__ == "__main__":
     # Local dry run

@@ -37,6 +37,19 @@ def init_db():
                 PRIMARY KEY (chat_id, ticker, signal_type)
             )
         """)
+        
+        # Table to track last known price per ticker (for price change alerts)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS last_prices (
+                chat_id INTEGER,
+                ticker TEXT,
+                last_price REAL,
+                last_alert_price REAL,
+                alert_threshold_pct REAL DEFAULT 5.0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (chat_id, ticker)
+            )
+        """)
         conn.commit()
 
 def add_subscription(chat_id, ticker):
@@ -53,6 +66,11 @@ def add_subscription(chat_id, ticker):
                 "INSERT INTO subscriptions (chat_id, ticker) VALUES (?, ?)",
                 (chat_id, ticker)
             )
+            # Initialize last_price row for price tracking
+            cursor.execute("""
+                INSERT OR IGNORE INTO last_prices (chat_id, ticker, last_price, last_alert_price, alert_threshold_pct)
+                VALUES (?, ?, NULL, NULL, 5.0)
+            """, (chat_id, ticker))
             conn.commit()
             return True
     except sqlite3.IntegrityError:
@@ -69,6 +87,11 @@ def remove_subscription(chat_id, ticker):
         cursor = conn.cursor()
         cursor.execute(
             "DELETE FROM subscriptions WHERE chat_id = ? AND ticker = ?",
+            (chat_id, ticker)
+        )
+        # Clean up related price tracking
+        cursor.execute(
+            "DELETE FROM last_prices WHERE chat_id = ? AND ticker = ?",
             (chat_id, ticker)
         )
         conn.commit()
@@ -173,3 +196,88 @@ def clear_all_signals_for_ticker(chat_id, ticker):
             (chat_id, ticker)
         )
         conn.commit()
+
+# Price tracking functions for % change alerts
+def get_last_price_info(chat_id, ticker):
+    """
+    Returns last known price and alert threshold for a user's ticker subscription.
+    Returns: {last_price, last_alert_price, alert_threshold_pct} or None
+    """
+    ticker = ticker.upper().strip()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT last_price, last_alert_price, alert_threshold_pct FROM last_prices WHERE chat_id = ? AND ticker = ?",
+            (chat_id, ticker)
+        )
+        row = cursor.fetchone()
+        if row:
+            return {
+                "last_price": row[0],
+                "last_alert_price": row[1],
+                "alert_threshold_pct": row[2]
+            }
+        return None
+
+def set_last_price(chat_id, ticker, price):
+    """
+    Updates the last known price for a ticker.
+    """
+    ticker = ticker.upper().strip()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO last_prices (chat_id, ticker, last_price, last_alert_price, alert_threshold_pct, updated_at)
+            VALUES (?, ?, ?, COALESCE((SELECT last_alert_price FROM last_prices WHERE chat_id = ? AND ticker = ?), NULL),
+                    COALESCE((SELECT alert_threshold_pct FROM last_prices WHERE chat_id = ? AND ticker = ?), 5.0),
+                    CURRENT_TIMESTAMP)
+        """, (chat_id, ticker, price, chat_id, ticker, chat_id, ticker))
+        conn.commit()
+
+def set_last_alert_price(chat_id, ticker, price):
+    """
+    Updates the price at which the last price change alert was sent.
+    """
+    ticker = ticker.upper().strip()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE last_prices SET last_alert_price = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE chat_id = ? AND ticker = ?
+        """, (price, chat_id, ticker))
+        conn.commit()
+
+def set_alert_threshold(chat_id, ticker, threshold_pct):
+    """
+    Sets a custom price change alert threshold (%) for a user's ticker.
+    """
+    ticker = ticker.upper().strip()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO last_prices (chat_id, ticker, last_price, last_alert_price, alert_threshold_pct, updated_at)
+            VALUES (?, ?,
+                    COALESCE((SELECT last_price FROM last_prices WHERE chat_id = ? AND ticker = ?), NULL),
+                    COALESCE((SELECT last_alert_price FROM last_prices WHERE chat_id = ? AND ticker = ?), NULL),
+                    ?,
+                    CURRENT_TIMESTAMP)
+        """, (chat_id, ticker, chat_id, ticker, chat_id, ticker, threshold_pct))
+        conn.commit()
+        return cursor.rowcount > 0
+
+def get_alert_threshold(chat_id, ticker):
+    """
+    Gets the custom price change alert threshold (%) for a user's ticker.
+    Returns default 5.0 if not set.
+    """
+    ticker = ticker.upper().strip()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT alert_threshold_pct FROM last_prices WHERE chat_id = ? AND ticker = ?",
+            (chat_id, ticker)
+        )
+        row = cursor.fetchone()
+        if row and row[0] is not None:
+            return row[0]
+        return 5.0

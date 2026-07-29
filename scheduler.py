@@ -74,6 +74,7 @@ class AlertScheduler:
     def _process_ticker_alerts(self, ticker, stock_data):
         """
         Evaluates technical criteria for a single ticker and alerts subscribers.
+        Also checks price change % alerts.
         """
         closes = stock_data["closes"]
         highs = stock_data["highs"]
@@ -81,7 +82,15 @@ class AlertScheduler:
         current_price = stock_data["current_price"]
         currency = stock_data["currency"]
 
-        # Basic validation
+        # Get all users subscribed to this specific ticker
+        subscribers = database.get_subscribers_for_ticker(ticker)
+        if not subscribers:
+            return
+
+        # --- 1. Price Change % Alerts (works even with minimal data) ---
+        self._check_price_change_alerts(ticker, current_price, currency, subscribers)
+
+        # Basic validation for technical indicators
         if len(closes) < 21:
             return
 
@@ -101,11 +110,6 @@ class AlertScheduler:
 
         # Verify no calculated values are None
         if None in (bb_upper_now, bb_middle_now, bb_lower_now, bb_upper_prev, bb_middle_prev, bb_lower_prev, rsi_now, rsi_prev):
-            return
-
-        # Get all users subscribed to this specific ticker
-        subscribers = database.get_subscribers_for_ticker(ticker)
-        if not subscribers:
             return
 
         # Define alert event conditions
@@ -192,6 +196,60 @@ class AlertScheduler:
                     self.bot.send_message(chat_id, alert_text)
                     # Register that we notified the user
                     database.set_last_signal(chat_id, ticker, sig_type, price_now)
+
+    def _check_price_change_alerts(self, ticker, current_price, currency, subscribers):
+        """
+        Checks if the price has changed by more than the user's threshold (%)
+        since the last alert was sent, and sends a notification if so.
+        """
+        for chat_id in subscribers:
+            try:
+                price_info = database.get_last_price_info(chat_id, ticker)
+                if price_info is None:
+                    # First time seeing this ticker for this user - initialize
+                    database.set_last_price(chat_id, ticker, current_price)
+                    database.set_last_alert_price(chat_id, ticker, current_price)
+                    continue
+
+                last_price = price_info["last_price"]
+                last_alert_price = price_info["last_alert_price"]
+                threshold = price_info["alert_threshold_pct"]
+
+                # Update the last known price
+                database.set_last_price(chat_id, ticker, current_price)
+
+                # Skip if we don't have a reference price yet
+                if last_alert_price is None or last_price is None:
+                    database.set_last_alert_price(chat_id, ticker, current_price)
+                    continue
+
+                # Calculate absolute % change from last alert price
+                if last_alert_price == 0:
+                    continue
+                pct_change = ((current_price - last_alert_price) / last_alert_price) * 100
+
+                # Check if change exceeds threshold (absolute value)
+                if abs(pct_change) >= threshold:
+                    direction = "📈 상승" if pct_change > 0 else "📉 하락"
+                    emoji = "🟢" if pct_change > 0 else "🔴"
+
+                    alert_text = (
+                        f"<b>{emoji} [{ticker}] 가격 변동 알림</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"💵 현재가: <b>{current_price:.2f} {currency}</b>\n"
+                        f"📊 변동: {direction} <b>{abs(pct_change):.2f}%</b>\n"
+                        f"📌 기준가: {last_alert_price:.2f} {currency}\n"
+                        f"⚙️ 설정된 알림 기준: {threshold:.1f}% 이상 변동\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"💡 상세 분석 리포트는 <code>/predict {ticker}</code> 를 입력하세요!"
+                    )
+
+                    self.bot.send_message(chat_id, alert_text)
+                    # Update the last alert price to current price
+                    database.set_last_alert_price(chat_id, ticker, current_price)
+
+            except Exception as e:
+                print(f"Error checking price change for {ticker} (chat {chat_id}): {e}")
 
     def _clear_event_for_all(self, subscribers, ticker, sig_type):
         """
