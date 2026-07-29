@@ -23,6 +23,8 @@ def calculate_ema(prices, period=20):
     """
     Calculates Exponential Moving Average (EMA) of a list of prices.
     Returns a list of EMAs. The first (period - 1) elements will be None.
+    
+    Handles None values in the input list (e.g., from MACD calculation).
     """
     if len(prices) < period:
         return [None] * len(prices)
@@ -30,11 +32,24 @@ def calculate_ema(prices, period=20):
     ema = [None] * len(prices)
     multiplier = 2 / (period + 1)
     
-    # SMA for the first EMA value
-    ema[period - 1] = sum(prices[:period]) / period
+    # Find first 'period' consecutive non-None values for initial SMA
+    valid_indices = [i for i, p in enumerate(prices) if p is not None]
+    if len(valid_indices) < period:
+        return [None] * len(prices)
     
-    for i in range(period, len(prices)):
-        ema[i] = (prices[i] - ema[i - 1]) * multiplier + ema[i - 1]
+    first_valid_idx = valid_indices[period - 1]
+    ema[first_valid_idx] = sum(prices[i] for i in valid_indices[:period]) / period
+    
+    # Calculate EMA for remaining indices
+    for idx in valid_indices[period:]:
+        if ema[idx - 1] is not None:
+            ema[idx] = (prices[idx] - ema[idx - 1]) * multiplier + ema[idx - 1]
+        else:
+            # If previous EMA is None, find the last non-None EMA
+            for j in range(idx - 1, -1, -1):
+                if ema[j] is not None:
+                    ema[idx] = (prices[idx] - ema[j]) * multiplier + ema[j]
+                    break
     
     return ema
 

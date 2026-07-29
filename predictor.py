@@ -44,23 +44,29 @@ def predict_buy_sell_prices(stock_data):
     support, resistance = find_support_resistance(highs, lows, period=20)
     volume_ratio = calculate_volume_trend(volumes, period=20)
     
-    # Extract latest values
-    bb_upper = upper_bands[-1]
-    bb_middle = middle_bands[-1]
-    bb_lower = lower_bands[-1]
-    rsi = rsi_list[-1]
-    macd_val = macd_line[-1]
-    signal_val = signal_line[-1]
-    hist_val = histogram[-1]
-    momentum = momentum_list[-1]
-    sma20_val = sma_20[-1]
-    sma50_val = sma_50[-1] if sma_50[-1] is not None else sma20_val
-    ema12_val = ema_12[-1]
-    ema26_val = ema_26[-1]
+    # Extract latest values (마지막 유효 None이 아닌 값 찾기)
+    def _last_valid(lst, default=None):
+        for i in range(len(lst) - 1, -1, -1):
+            if lst[i] is not None:
+                return lst[i]
+        return default
+    
+    bb_upper = _last_valid(upper_bands)
+    bb_middle = _last_valid(middle_bands)
+    bb_lower = _last_valid(lower_bands)
+    rsi = _last_valid(rsi_list)
+    macd_val = _last_valid(macd_line)
+    signal_val = _last_valid(signal_line)
+    hist_val = _last_valid(histogram)
+    momentum = _last_valid(momentum_list)
+    sma20_val = _last_valid(sma_20)
+    sma50_val = _last_valid(sma_50, sma20_val)
+    ema12_val = _last_valid(ema_12)
+    ema26_val = _last_valid(ema_26)
     
     # Safety check
-    required = [bb_upper, bb_middle, bb_lower, rsi, support, resistance]
-    if None in required or macd_val is None or signal_val is None:
+    required = [bb_upper, bb_middle, bb_lower, rsi, support, resistance, macd_val, signal_val]
+    if None in required:
         return {
             "current_price": current_price,
             "error": "Insufficient historical data to calculate technical indicators."
@@ -162,13 +168,14 @@ def predict_buy_sell_prices(stock_data):
     
     # 5. SMA 20 vs 50 (Golden Cross / Dead Cross) (가중치 1.5)
     if sma20_val is not None and sma50_val is not None:
-        if sma20_val > sma50_val and closes[-2] <= sma50_val and current_price > sma50_val:
+        prev_close = closes[-2] if len(closes) >= 2 else current_price
+        if sma20_val > sma50_val and prev_close <= sma50_val and current_price > sma50_val:
             score += 1.5
             signals.append("✅ 골든크로스 발생!")
         elif sma20_val > sma50_val:
             score += 1.0
             signals.append("단기 > 장기 이동평균 (우상향)")
-        elif sma20_val < sma50_val and closes[-2] >= sma50_val and current_price < sma50_val:
+        elif sma20_val < sma50_val and prev_close >= sma50_val and current_price < sma50_val:
             score -= 1.5
             signals.append("❌ 데드크로스 발생!")
         elif sma20_val < sma50_val:

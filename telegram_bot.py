@@ -259,7 +259,9 @@ class TelegramBot:
         self.send_message(chat_id, "🔄 구독 중인 종목들의 현재가를 가져오는 중...",
                         reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
         
-        now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+        # 한국 시간 (KST = UTC + 9)
+        kst_offset = 9 * 60 * 60
+        now_str = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() + kst_offset))
         lines = [f"<b>📋 나의 관심 주식 리스트</b>\n⏱ 조회시간: <code>{now_str}</code>\n"]
         for idx, ticker in enumerate(subscriptions, 1):
             # 빠른 현재가 조회 (프리장/애프터장 포함)
