@@ -265,12 +265,41 @@ class TelegramBot:
             # 빠른 현재가 조회 (프리장/애프터장 포함)
             price_data = stock_api.fetch_current_price_only(ticker)
             if price_data:
-                lines.append(f"{idx}. <b>{ticker}</b>: {price_data['price']:.2f} {price_data['currency']}")
+                price = price_data['price']
+                prev_close = price_data.get('previous_close')
+                currency = price_data['currency']
+                
+                # 전일 대비 등락률 계산
+                change_str = ""
+                if prev_close is not None and prev_close > 0:
+                    pct_change = ((price - prev_close) / prev_close) * 100
+                    if abs(pct_change) < 0.01:
+                        change_str = " (보합)"
+                    elif pct_change > 0:
+                        change_str = f" (📈 <b>+{pct_change:.2f}%</b>)"
+                    else:
+                        change_str = f" (📉 <b>{pct_change:.2f}%</b>)"
+                
+                lines.append(f"{idx}. <b>{ticker}</b>: {price:.2f} {currency}{change_str}")
             else:
                 # fallback: 전체 데이터 조회
                 data = stock_api.fetch_stock_data(ticker)
                 if data:
-                    lines.append(f"{idx}. <b>{ticker}</b>: {data['current_price']:.2f} {data['currency']}")
+                    price = data['current_price']
+                    prev_close = data.get('previous_close')
+                    currency = data['currency']
+                    
+                    change_str = ""
+                    if prev_close is not None and prev_close > 0:
+                        pct_change = ((price - prev_close) / prev_close) * 100
+                        if abs(pct_change) < 0.01:
+                            change_str = " (보합)"
+                        elif pct_change > 0:
+                            change_str = f" (📈 <b>+{pct_change:.2f}%</b>)"
+                        else:
+                            change_str = f" (📉 <b>{pct_change:.2f}%</b>)"
+                    
+                    lines.append(f"{idx}. <b>{ticker}</b>: {price:.2f} {currency}{change_str}")
                 else:
                     lines.append(f"{idx}. <b>{ticker}</b>: 데이터 로드 실패 ⚠️")
                 

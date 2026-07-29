@@ -30,44 +30,96 @@ def _make_request(url, retries=3, delay=2):
     return None
 
 
-def _get_latest_price_from_5m(ticker):
+def _get_realtime_price(ticker):
     """
-    5분봉 차트에서 마지막 유효 종가를 찾습니다.
-    프리장/애프터장/정규장 모든 시간대의 가격을 반영합니다.
+    1분봉 + 5분봉 차트에서 마지막 유효 가격을 찾습니다.
+    프리장(PRE) / 정규장(REGULAR) / 애프터장(POST) 모든 시간대의 가격을 반영합니다.
+    
+    1순위: 1분봉(range=1d) - 프리마켓 데이터 포함, 가장 정확한 실시간 값
+    2순위: 5분봉(range=5d) - 장 마감 후/주말 등 1분봉 데이터 없을 때 fallback
+    
+    반환: (current_price, previous_close, currency, market_state)
     """
     encoded_ticker = urllib.parse.quote(ticker)
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=2d&interval=5m"
     
-    data = _make_request(url)
-    if not data:
-        return None, None, None
+    current_price = None
+    previous_close = None
+    currency = None
+    market_state = None
     
-    try:
-        result = data.get("chart", {}).get("result", [{}])[0]
-        meta = result.get("meta", {})
-        
-        # 1순위: meta의 regularMarketPrice (가장 정확한 실시간 값)
-        price = meta.get("regularMarketPrice")
-        currency = meta.get("currency", "USD")
-        market_state = meta.get("marketState", "UNKNOWN")
-        
-        if price is not None:
-            return price, currency, market_state
-        
-        # 2순위: 5분봉 마지막 유효 close
-        closes = result.get("indicators", {}).get("quote", [{}])[0].get("close", [])
-        for i in range(len(closes) - 1, -1, -1):
-            if closes[i] is not None:
-                return closes[i], currency, market_state
-    except (IndexError, AttributeError, TypeError):
-        pass
+    # ================================================================
+    # 1순위: 1분봉 (range=2d, interval=1m)
+    # - 프리마켓(오전 4시~9시30분 ET) 데이터 포함
+    # - 정규장 실시간 데이터
+    # - 애프터마켓(오후 4시~8시 ET) 데이터 포함
+    # ================================================================
+    url_1m = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=2d&interval=1m"
+    data_1m = _make_request(url_1m)
     
-    return None, None, None
+    if data_1m:
+        try:
+            result = data_1m.get("chart", {}).get("result", [{}])[0]
+            meta = result.get("meta", {})
+            
+            currency = meta.get("currency", "USD")
+            market_state = meta.get("marketState", "UNKNOWN")
+            
+            # 전일 종가
+            previous_close = (meta.get("chartPreviousClose") or 
+                            meta.get("previousClose") or 
+                            meta.get("regularMarketPreviousClose"))
+            
+            # 현재가: meta.regularMarketPrice (가장 정확)
+            current_price = meta.get("regularMarketPrice")
+            
+            # 현재가: 1분봉 마지막 유효 close (프리장/애프터장 포함)
+            if current_price is None:
+                closes = result.get("indicators", {}).get("quote", [{}])[0].get("close", [])
+                for i in range(len(closes) - 1, -1, -1):
+                    if closes[i] is not None:
+                        current_price = closes[i]
+                        break
+        except (IndexError, AttributeError, TypeError):
+            pass
+    
+    # ================================================================
+    # 2순위: 5분봉 (range=5d, interval=5m) - 1분봉 실패 시 fallback
+    # ================================================================
+    if current_price is None:
+        url_5m = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=5d&interval=5m"
+        data_5m = _make_request(url_5m)
+        
+        if data_5m:
+            try:
+                result = data_5m.get("chart", {}).get("result", [{}])[0]
+                meta = result.get("meta", {})
+                
+                if currency is None:
+                    currency = meta.get("currency", "USD")
+                if market_state is None:
+                    market_state = meta.get("marketState", "UNKNOWN")
+                if previous_close is None:
+                    previous_close = (meta.get("chartPreviousClose") or 
+                                    meta.get("previousClose") or 
+                                    meta.get("regularMarketPreviousClose"))
+                
+                current_price = meta.get("regularMarketPrice")
+                if current_price is None:
+                    closes = result.get("indicators", {}).get("quote", [{}])[0].get("close", [])
+                    for i in range(len(closes) - 1, -1, -1):
+                        if closes[i] is not None:
+                            current_price = closes[i]
+                            break
+            except (IndexError, AttributeError, TypeError):
+                pass
+    
+    return current_price, previous_close, currency, market_state
 
 
 def _get_daily_data(ticker):
     """
-    일봉 데이터를 가져옵니다 (기술적 지표 계산용).
+    일봉 데이터를 가져옵니다 (기술적 지표 계산용 + 전일종가).
+    반환: { closes, highs, lows, opens, volumes, timestamps, currency, previous_close }
     """
     encoded_ticker = urllib.parse.quote(ticker)
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=60d&interval=1d"
@@ -80,6 +132,9 @@ def _get_daily_data(ticker):
         result = data.get("chart", {}).get("result", [{}])[0]
         meta = result.get("meta", {})
         currency = meta.get("currency", "USD")
+        
+        # 전일 종가
+        previous_close = meta.get("chartPreviousClose") or meta.get("previousClose")
         
         timestamps = result.get("timestamp", [])
         quote = result.get("indicators", {}).get("quote", [{}])[0]
@@ -122,6 +177,7 @@ def _get_daily_data(ticker):
             return None
         
         cleaned["currency"] = currency
+        cleaned["previous_close"] = previous_close
         return cleaned
         
     except (IndexError, AttributeError, TypeError):
@@ -133,19 +189,19 @@ def fetch_stock_data(ticker):
     Fetches historical daily data + realtime price from Yahoo Finance API.
     
     - 일봉(1d interval, 60일): 기술적 지표 계산용
-    - 5분봉(5m interval, 2일): 실시간 현재가 (프리장/애프터장 포함)
+    - 5분봉(5m interval, 5일): 실시간 현재가 (프리장/애프터장 포함)
     
     Returns a dictionary of cleaned stock data or None if failed.
     """
     ticker = ticker.strip().upper()
     
-    # 1. 일봉 데이터 (기술적 지표 계산용)
+    # 1. 일봉 데이터 (기술적 지표 계산용 + 전일종가)
     daily = _get_daily_data(ticker)
     if not daily:
         return None
     
-    # 2. 실시간 현재가 (5분봉)
-    realtime_price, currency, market_state = _get_latest_price_from_5m(ticker)
+    # 2. 실시간 현재가 (1분봉 + 5분봉) - 프리장/애프터장 포함
+    realtime_price, realtime_prev_close, currency, market_state = _get_realtime_price(ticker)
     
     # currency가 None이면 일봉 데이터에서 가져옴
     if currency is None:
@@ -154,13 +210,18 @@ def fetch_stock_data(ticker):
     # 3. 현재가 결정
     current_price = realtime_price
     if current_price is None:
-        # 5분봉 실패 시 일봉 마지막 close 사용
         current_price = daily["closes"][-1]
+    
+    # 4. 전일 종가 결정 (5분봉 meta 우선, 없으면 일봉 데이터)
+    previous_close = realtime_prev_close or daily.get("previous_close")
+    if previous_close is None and len(daily["closes"]) >= 2:
+        previous_close = daily["closes"][-2]  # 일봉 마지막에서 두번째 값
     
     return {
         "ticker": ticker,
         "currency": currency,
         "current_price": current_price,
+        "previous_close": previous_close,
         "market_state": market_state or "UNKNOWN",
         "timestamps": daily["timestamps"],
         "closes": daily["closes"],
@@ -175,13 +236,18 @@ def fetch_current_price_only(ticker):
     """
     가벼운 현재가 조회용 함수.
     5분봉 API로 프리장/애프터장/정규장 실시간 가격을 조회합니다.
+    반환: { price, previous_close, currency }
     """
     ticker = ticker.strip().upper()
     
-    # 1순위: 5분봉 API (가장 정확한 실시간 값)
-    price, currency, _ = _get_latest_price_from_5m(ticker)
+    # 1순위: 1분봉 + 5분봉 API (가장 정확한 실시간 값, 프리장/애프터장 포함)
+    price, prev_close, currency, _ = _get_realtime_price(ticker)
     if price is not None:
-        return {"price": price, "currency": currency or "USD"}
+        return {
+            "price": price,
+            "previous_close": prev_close,
+            "currency": currency or "USD"
+        }
     
     # 2순위: spark API (fallback)
     encoded_ticker = urllib.parse.quote(ticker)
@@ -193,16 +259,24 @@ def fetch_current_price_only(ticker):
             response = result.get("response", [{}])[0]
             meta = response.get("meta", {})
             price = meta.get("regularMarketPrice")
+            prev_close = meta.get("previousClose")
             currency = meta.get("currency", "USD")
             if price is not None:
-                return {"price": price, "currency": currency}
+                return {"price": price, "previous_close": prev_close, "currency": currency}
         except (IndexError, AttributeError, TypeError):
             pass
     
     # 3순위: 일봉 API (최후의 fallback)
     daily = _get_daily_data(ticker)
     if daily and daily["closes"]:
-        return {"price": daily["closes"][-1], "currency": daily.get("currency", "USD")}
+        prev_close = daily.get("previous_close")
+        if prev_close is None and len(daily["closes"]) >= 2:
+            prev_close = daily["closes"][-2]
+        return {
+            "price": daily["closes"][-1],
+            "previous_close": prev_close,
+            "currency": daily.get("currency", "USD")
+        }
     
     return None
 
@@ -214,6 +288,7 @@ if __name__ == "__main__":
         if data:
             print(f"\n=== {t} ===")
             print(f"  Current Price: {data['current_price']} {data['currency']}")
+            print(f"  Previous Close: {data['previous_close']}")
             print(f"  Market State: {data['market_state']}")
             print(f"  Daily Data Points: {len(data['closes'])}")
         else:
@@ -221,4 +296,5 @@ if __name__ == "__main__":
         
         price_only = fetch_current_price_only(t)
         if price_only:
-            print(f"  [Light Fetch] Price: {price_only['price']} {price_only['currency']}")
+            print(f"  [Light Fetch] Price: {price_only['price']} "
+                  f"(Prev: {price_only['previous_close']}) {price_only['currency']}")
