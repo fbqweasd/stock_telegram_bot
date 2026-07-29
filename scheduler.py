@@ -199,54 +199,73 @@ class AlertScheduler:
 
     def _check_price_change_alerts(self, ticker, current_price, currency, subscribers):
         """
-        Checks if the price has changed by more than the user's threshold (%)
-        since the last alert was sent, and sends a notification if so.
+        전일 종가 대비 5%, 10%, 20% 변동 시 하루에 1번만 알림을 전송합니다.
+        더 큰 변동이 먼저 발생하면 작은 변동은 알리지 않습니다.
+        예: 본장 시작 직후 -10% 발생 → -5% 알림은 스킵
         """
+        # 전일 종가 가져오기
+        stock_data = stock_api.fetch_stock_data(ticker)
+        if not stock_data:
+            return
+        prev_close = stock_data.get("previous_close")
+        if prev_close is None or prev_close <= 0:
+            return
+
+        # 변동률 계산
+        pct_change = ((current_price - prev_close) / prev_close) * 100
+        abs_pct = abs(pct_change)
+
+        # 오늘 날짜 (KST 기준)
+        kst_offset = 9 * 60 * 60
+        today_str = time.strftime("%Y-%m-%d", time.gmtime(time.time() + kst_offset))
+
+        # 알림 임계값 리스트 (큰 순서대로)
+        thresholds = [20, 10, 5]
+
         for chat_id in subscribers:
             try:
-                price_info = database.get_last_price_info(chat_id, ticker)
-                if price_info is None:
-                    # First time seeing this ticker for this user - initialize
-                    database.set_last_price(chat_id, ticker, current_price)
-                    database.set_last_alert_price(chat_id, ticker, current_price)
+                # 오늘 이미 보낸 알림 확인
+                sent_alerts = database.get_daily_alerts_for_date(chat_id, ticker, today_str)
+
+                # 이미 보낸 최대 임계값 확인
+                max_sent = 0
+                for alert in sent_alerts:
+                    if alert["threshold_pct"] > max_sent:
+                        max_sent = alert["threshold_pct"]
+
+                # 이미 더 큰 변동 알림을 보냈으면 스킵
+                if max_sent > 0:
                     continue
 
-                last_price = price_info["last_price"]
-                last_alert_price = price_info["last_alert_price"]
-                threshold = price_info["alert_threshold_pct"]
+                # 현재 변동률이 넘는 가장 큰 임계값 찾기
+                triggered_threshold = None
+                for t in thresholds:
+                    if abs_pct >= t:
+                        triggered_threshold = t
+                        break
 
-                # Update the last known price
+                if triggered_threshold is None:
+                    continue
+
+                direction = "📈 상승" if pct_change > 0 else "📉 하락"
+                emoji = "🟢" if pct_change > 0 else "🔴"
+
+                alert_text = (
+                    f"<b>{emoji} [{ticker}] 전일 종가 대비 변동 알림</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━\n"
+                    f"💵 현재가: <b>{current_price:.2f} {currency}</b>\n"
+                    f"📌 전일 종가: {prev_close:.2f} {currency}\n"
+                    f"📊 변동: {direction} <b>{abs_pct:.2f}%</b> (기준: {triggered_threshold}%)\n"
+                    f"━━━━━━━━━━━━━━━━━━━\n"
+                    f"💡 상세 분석 리포트는 <code>/predict {ticker}</code> 를 입력하세요!"
+                )
+
+                self.bot.send_message(chat_id, alert_text)
+                database.record_daily_alert(chat_id, ticker, today_str, triggered_threshold,
+                                           "up" if pct_change > 0 else "down")
+
+                # Update last price and last alert price
                 database.set_last_price(chat_id, ticker, current_price)
-
-                # Skip if we don't have a reference price yet
-                if last_alert_price is None or last_price is None:
-                    database.set_last_alert_price(chat_id, ticker, current_price)
-                    continue
-
-                # Calculate absolute % change from last alert price
-                if last_alert_price == 0:
-                    continue
-                pct_change = ((current_price - last_alert_price) / last_alert_price) * 100
-
-                # Check if change exceeds threshold (absolute value)
-                if abs(pct_change) >= threshold:
-                    direction = "📈 상승" if pct_change > 0 else "📉 하락"
-                    emoji = "🟢" if pct_change > 0 else "🔴"
-
-                    alert_text = (
-                        f"<b>{emoji} [{ticker}] 가격 변동 알림</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"💵 현재가: <b>{current_price:.2f} {currency}</b>\n"
-                        f"📊 변동: {direction} <b>{abs(pct_change):.2f}%</b>\n"
-                        f"📌 기준가: {last_alert_price:.2f} {currency}\n"
-                        f"⚙️ 설정된 알림 기준: {threshold:.1f}% 이상 변동\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"💡 상세 분석 리포트는 <code>/predict {ticker}</code> 를 입력하세요!"
-                    )
-
-                    self.bot.send_message(chat_id, alert_text)
-                    # Update the last alert price to current price
-                    database.set_last_alert_price(chat_id, ticker, current_price)
 
             except Exception as e:
                 print(f"Error checking price change for {ticker} (chat {chat_id}): {e}")

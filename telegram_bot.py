@@ -164,9 +164,7 @@ class TelegramBot:
             "/list": "/list",
             "/목록": "/list",
             "/predict": "/predict",
-            "/예측": "/predict",
-            "/setalert": "/setalert",
-            "/알림설정": "/setalert"
+            "/예측": "/predict"
         }
         
         # 명령어 정규화
@@ -184,8 +182,6 @@ class TelegramBot:
             self._handle_list(chat_id, reply_to_message_id, message_thread_id)
         elif normalized_cmd == "/predict":
             self._handle_predict(chat_id, arg, reply_to_message_id, message_thread_id)
-        elif normalized_cmd == "/setalert":
-            self._handle_setalert(chat_id, arg, reply_to_message_id, message_thread_id)
         else:
             self.send_message(chat_id, "⚠️ 알 수 없는 명령어입니다. 사용 가능한 명령어를 보려면 /help 를 입력하세요.",
                             reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
@@ -209,12 +205,14 @@ class TelegramBot:
             "<i>예시: /add AAPL (미국), /추가 005930.KS (삼성전자)</i>\n\n"
             "📌 <b>/del [티커]</b> 또는 <b>/삭제 [티커]</b> - 관심 주식을 삭제합니다.\n"
             "<i>예시: /del AAPL, /삭제 TSLA</i>\n\n"
-            "📌 <b>/list</b> 또는 <b>/목록</b> - 내가 구독 중인 주식 리스트와 현재가를 조회합니다.\n\n"
+            "📌 <b>/list</b> 또는 <b>/목록</b> - 내가 구독 중인 주식 리스트와 현재가를 조회합니다.\n"
+            "<i>전일 종가 대비 변동률도 함께 표시됩니다.</i>\n\n"
             "📌 <b>/predict [티커]</b> 또는 <b>/예측 [티커]</b> - 특정 주식의 기술적 지표 분석 및 매수/매도 예측 가격을 즉시 조회합니다.\n"
             "<i>예시: /predict TSLA, /예측 AAPL</i>\n\n"
-            "📌 <b>/setalert [티커] [변동%]</b> 또는 <b>/알림설정 [티커] [변동%]</b> - 가격 변동 알림 기준을 설정합니다.\n"
-            "<i>예시: /setalert AAPL 5, /알림설정 005930.KS 3</i>\n\n"
             "📌 <b>/help</b> 또는 <b>/도움말</b> - 이 도움말을 표시합니다.\n\n"
+            "🔔 <b>자동 가격 변동 알림</b>\n"
+            "등록된 종목이 전일 종가 대비 <b>5%, 10%, 20%</b> 이상 변동하면 자동으로 알림을 보내드립니다.\n"
+            "하루에 1번만 알림이 전송되며, 더 큰 변동이 먼저 발생하면 작은 변동은 알리지 않습니다.\n\n"
             "💡 <b>티커 팁:</b>\n"
             "- 미국 주식: 티커명 그대로 입력 (AAPL, TSLA, MSFT)\n"
             "- 한국 코스피: 종목코드.KS 입력 (005930.KS, 000660.KS)\n"
@@ -300,6 +298,12 @@ class TelegramBot:
                 price = price_data['price']
                 prev_close = price_data.get('previous_close')
                 currency = price_data['currency']
+                
+                # 전일 종가가 없으면 전체 데이터에서 가져오기 (fallback)
+                if prev_close is None or prev_close <= 0:
+                    full_data = stock_api.fetch_stock_data(ticker)
+                    if full_data:
+                        prev_close = full_data.get("previous_close")
                 
                 # 전일 대비 등락률 계산
                 change_str = ""
@@ -545,73 +549,6 @@ class TelegramBot:
         # )
         
         self.send_message(chat_id, report_text, reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
-
-    def _handle_setalert(self, chat_id, arg, reply_to_message_id=None, message_thread_id=None):
-        """
-        Sets a custom price change alert threshold (%) for a subscribed ticker.
-        Usage: /setalert [티커] [퍼센트]
-        Example: /setalert AAPL 5
-        """
-        if not arg:
-            self.send_message(
-                chat_id,
-                "⚠️ 사용법: <code>/setalert [티커] [변동%]</code> 형태로 입력해 주세요.\n\n"
-                "예시:\n"
-                "<code>/setalert AAPL 5</code> - AAPL이 5% 이상 변동 시 알림\n"
-                "<code>/setalert 005930.KS 3</code> - 삼성전자 3% 이상 변동 시 알림\n\n"
-                "📌 현재 설정된 알림 기준은 <code>/list</code> 명령어로 확인 가능합니다.",
-                reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id
-            )
-            return
-
-        parts = arg.split()
-        if len(parts) != 2:
-            self.send_message(
-                chat_id,
-                "⚠️ 티커와 퍼센트 값을 모두 입력해 주세요.\n"
-                "예시: <code>/setalert AAPL 5</code>",
-                reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id
-            )
-            return
-
-        ticker = parts[0].upper().strip()
-        try:
-            threshold = float(parts[1].strip())
-            if threshold <= 0 or threshold > 100:
-                self.send_message(chat_id, "⚠️ 변동%는 1~100 사이의 값을 입력해 주세요.",
-                                reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
-                return
-        except ValueError:
-            self.send_message(chat_id, "⚠️ 변동%는 숫자로 입력해 주세요. (예: 5, 3.5, 10)",
-                            reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
-            return
-
-        # Check if user is subscribed to this ticker
-        subscriptions = database.get_user_subscriptions(chat_id)
-        if ticker not in subscriptions:
-            self.send_message(
-                chat_id,
-                f"⚠️ <code>{ticker}</code>는 등록되지 않은 티커입니다.\n"
-                f"먼저 <code>/add {ticker}</code> 명령어로 등록해 주세요.",
-                reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id
-            )
-            return
-
-        # Set the threshold
-        success = database.set_alert_threshold(chat_id, ticker, threshold)
-        if success:
-            self.send_message(
-                chat_id,
-                f"✅ <code>{ticker}</code>의 가격 변동 알림 기준이 <b>{threshold:.1f}%</b>로 설정되었습니다.\n"
-                f"이제 {ticker}의 가격이 기준가 대비 {threshold:.1f}% 이상 변동하면 알림을 보내드립니다.",
-                reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id
-            )
-        else:
-            self.send_message(
-                chat_id,
-                f"⚠️ <code>{ticker}</code>의 알림 기준 설정에 실패했습니다. 다시 시도해 주세요.",
-                reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id
-            )
 
 if __name__ == "__main__":
     # Local dry run

@@ -50,6 +50,20 @@ def init_db():
                 PRIMARY KEY (chat_id, ticker)
             )
         """)
+        
+        # Table to track daily price alerts (전일 종가 기준 5%/10%/20% 변동 알림)
+        # 하루에 1번만 알림을 보내기 위해 사용
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS daily_price_alerts (
+                chat_id INTEGER,
+                ticker TEXT,
+                alert_date TEXT,
+                threshold_pct REAL,
+                direction TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (chat_id, ticker, alert_date)
+            )
+        """)
         conn.commit()
 
 def add_subscription(chat_id, ticker):
@@ -281,3 +295,58 @@ def get_alert_threshold(chat_id, ticker):
         if row and row[0] is not None:
             return row[0]
         return 5.0
+
+# ================================================================
+# Daily price alert tracking (전일 종가 기준 5%/10%/20% 변동 알림)
+# 하루에 1번만 알림을 보내도록 관리
+# ================================================================
+
+def get_daily_alerts_for_date(chat_id, ticker, alert_date):
+    """
+    Returns all sent daily alerts for a specific user/ticker/date.
+    Returns a list of dicts: [{threshold_pct, direction}, ...]
+    """
+    ticker = ticker.upper().strip()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT threshold_pct, direction FROM daily_price_alerts WHERE chat_id = ? AND ticker = ? AND alert_date = ?",
+            (chat_id, ticker, alert_date)
+        )
+        rows = cursor.fetchall()
+        return [{"threshold_pct": row[0], "direction": row[1]} for row in rows]
+
+def get_daily_alerts_for_ticker_date(ticker, alert_date):
+    """
+    Returns all chat_ids that have already received a daily alert for a given ticker/date.
+    Returns a dict: {chat_id: [threshold_pct, ...]}
+    """
+    ticker = ticker.upper().strip()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT chat_id, threshold_pct, direction FROM daily_price_alerts WHERE ticker = ? AND alert_date = ?",
+            (ticker, alert_date)
+        )
+        rows = cursor.fetchall()
+        result = {}
+        for row in rows:
+            chat_id = row[0]
+            if chat_id not in result:
+                result[chat_id] = []
+            result[chat_id].append({"threshold_pct": row[1], "direction": row[2]})
+        return result
+
+def record_daily_alert(chat_id, ticker, alert_date, threshold_pct, direction):
+    """
+    Records that a daily price alert was sent for a specific user/ticker/date.
+    """
+    ticker = ticker.upper().strip()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR IGNORE INTO daily_price_alerts (chat_id, ticker, alert_date, threshold_pct, direction)
+            VALUES (?, ?, ?, ?, ?)
+        """, (chat_id, ticker, alert_date, threshold_pct, direction))
+        conn.commit()
+        return cursor.rowcount > 0
