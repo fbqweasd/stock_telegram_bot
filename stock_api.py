@@ -39,8 +39,7 @@ def _get_realtime_price(ticker):
     1순위: 1분봉(range=2d, interval=1m)
     2순위: 5분봉(range=5d, interval=5m) - 1분봉 실패 시 fallback
     
-    반환: (current_price, previous_close, currency, market_state, chart_closes)
-      - chart_closes: 1분봉/5분봉에서 추출한 실시간 close 리스트 (previous_close 계산 보조용)
+    반환: (current_price, previous_close, currency, market_state)
     """
     encoded_ticker = urllib.parse.quote(ticker)
     
@@ -48,7 +47,6 @@ def _get_realtime_price(ticker):
     previous_close = None
     currency = None
     market_state = None
-    chart_closes = None
     
     # ================================================================
     # 1순위: 1분봉 (range=2d, interval=1m)
@@ -69,15 +67,12 @@ def _get_realtime_price(ticker):
                             meta.get("previousClose") or 
                             meta.get("regularMarketPreviousClose"))
             
-            # 실시간 close 데이터 저장
-            closes_1m = result.get("indicators", {}).get("quote", [{}])[0].get("close", [])
-            chart_closes = [c for c in closes_1m if c is not None]
-            
             # 현재가: meta.regularMarketPrice
             current_price = meta.get("regularMarketPrice")
             
             # 현재가: 1분봉 마지막 유효 close
             if current_price is None:
+                closes_1m = result.get("indicators", {}).get("quote", [{}])[0].get("close", [])
                 for i in range(len(closes_1m) - 1, -1, -1):
                     if closes_1m[i] is not None:
                         current_price = closes_1m[i]
@@ -106,12 +101,9 @@ def _get_realtime_price(ticker):
                                     meta.get("previousClose") or 
                                     meta.get("regularMarketPreviousClose"))
                 
-                closes_5m = result.get("indicators", {}).get("quote", [{}])[0].get("close", [])
-                if chart_closes is None:
-                    chart_closes = [c for c in closes_5m if c is not None]
-                
                 current_price = meta.get("regularMarketPrice")
                 if current_price is None:
+                    closes_5m = result.get("indicators", {}).get("quote", [{}])[0].get("close", [])
                     for i in range(len(closes_5m) - 1, -1, -1):
                         if closes_5m[i] is not None:
                             current_price = closes_5m[i]
@@ -119,7 +111,7 @@ def _get_realtime_price(ticker):
             except (IndexError, AttributeError, TypeError):
                 pass
     
-    return current_price, previous_close, currency, market_state, chart_closes
+    return current_price, previous_close, currency, market_state
 
 
 def _get_daily_data(ticker):
@@ -138,9 +130,6 @@ def _get_daily_data(ticker):
         result = data.get("chart", {}).get("result", [{}])[0]
         meta = result.get("meta", {})
         currency = meta.get("currency", "USD")
-        
-        # 전일 종가
-        previous_close = meta.get("chartPreviousClose") or meta.get("previousClose")
         
         timestamps = result.get("timestamp", [])
         quote = result.get("indicators", {}).get("quote", [{}])[0]
@@ -182,8 +171,14 @@ def _get_daily_data(ticker):
         if len(cleaned["closes"]) < 20:
             return None
         
+        # 전일 종가: meta.chartPreviousClose는 range=60d 기준 첫 데이터 이전(약 60거래일 전) 종가이므로
+        # 실제 전일 종가는 마지막에서 두 번째 값(closes[-2])을 사용
+        # closes[-1]은 오늘 종가(장중이면 현재가와 유사)이므로 부적합
         cleaned["currency"] = currency
-        cleaned["previous_close"] = previous_close
+        if len(cleaned["closes"]) >= 2:
+            cleaned["previous_close"] = cleaned["closes"][-2]
+        else:
+            cleaned["previous_close"] = cleaned["closes"][-1]
         return cleaned
         
     except (IndexError, AttributeError, TypeError):
@@ -207,7 +202,7 @@ def fetch_stock_data(ticker):
         return None
     
     # 2. 실시간 현재가 (1분봉 + 5분봉) - 프리장/애프터장 포함
-    realtime_price, realtime_prev_close, currency, market_state, _ = _get_realtime_price(ticker)
+    realtime_price, realtime_prev_close, currency, market_state = _get_realtime_price(ticker)
     
     # currency가 None이면 일봉 데이터에서 가져옴
     if currency is None:
@@ -218,10 +213,10 @@ def fetch_stock_data(ticker):
     if current_price is None:
         current_price = daily["closes"][-1]
     
-    # 4. 전일 종가 결정 (5분봉 meta 우선, 없으면 일봉 데이터)
-    previous_close = realtime_prev_close or daily.get("previous_close")
-    if previous_close is None and len(daily["closes"]) >= 2:
-        previous_close = daily["closes"][-2]  # 일봉 마지막에서 두번째 값
+    # 4. 전일 종가: _get_daily_data에서 이미 closes[-1]로 정확한 값을 제공
+    previous_close = daily.get("previous_close")
+    if previous_close is None:
+        previous_close = realtime_prev_close
     
     return {
         "ticker": ticker,
@@ -241,73 +236,30 @@ def fetch_stock_data(ticker):
 def fetch_current_price_only(ticker):
     """
     가벼운 현재가 조회용 함수.
-    1분봉/5분봉 API로 프리장/애프터장/정규장 실시간 가격을 조회합니다.
-    전일 종가는 일봉 데이터의 chartPreviousClose를 우선 사용하여 정확도를 높입니다.
+    실시간 현재가는 1분봉/5분봉 API로, 전일 종가는 일봉 API로 조회합니다.
     반환: { price, previous_close, currency }
     """
     ticker = ticker.strip().upper()
     
-    # 1순위: 1분봉 + 5분봉 API (가장 정확한 실시간 값, 프리장/애프터장 포함)
-    price, prev_close, currency, _, chart_closes = _get_realtime_price(ticker)
+    # 1. 일봉 데이터에서 전일 종가 조회 (가장 정확한 기준)
+    daily = _get_daily_data(ticker)
+    daily_prev_close = daily.get("previous_close") if daily else None
     
-    # 전일 종가 보정: 일봉 데이터의 previous_close가 더 정확한 경우가 많음
-    # 특히 한국 주식의 경우 intraday API의 previousClose가 부정확할 수 있으므로
-    # 일봉 API에서 정확한 전일 종가를 가져옴
-    refined_prev_close = prev_close
-    
-    # intraday prev_close가 None이거나 현재가와 터무니없이 차이나면 일봉에서 보정
-    if prev_close is None or prev_close <= 0:
-        daily_for_prev = _get_daily_data(ticker)
-        if daily_for_prev:
-            refined_prev_close = daily_for_prev.get("previous_close")
-            if refined_prev_close is None and len(daily_for_prev["closes"]) >= 2:
-                refined_prev_close = daily_for_prev["closes"][-2]
-    elif chart_closes and len(chart_closes) >= 391:
-        # 1분봉 기준 하루 거래시간 약 390분(6.5시간). 391개 이상이면 2일치 데이터가 있음
-        # 전일 마지막 봉의 종가를 전일 종가로 사용 (intraday chartPreviousClose보다 정확할 수 있음)
-        prev_day_close = chart_closes[-391] if len(chart_closes) >= 391 else None
-        if prev_day_close and prev_day_close > 0:
-            # API의 previous_close와 차이가 5% 이상 나면 chart 데이터 우선
-            if refined_prev_close and refined_prev_close > 0:
-                diff_pct = abs(prev_day_close - refined_prev_close) / refined_prev_close
-                if diff_pct > 0.05:
-                    refined_prev_close = prev_day_close
-            else:
-                refined_prev_close = prev_day_close
+    # 2. 실시간 현재가 (1분봉 + 5분봉 API, 프리장/애프터장 포함)
+    price, _, currency, _ = _get_realtime_price(ticker)
     
     if price is not None:
         return {
             "price": price,
-            "previous_close": refined_prev_close,
+            "previous_close": daily_prev_close,
             "currency": currency or "USD"
         }
     
-    # 2순위: spark API (fallback)
-    encoded_ticker = urllib.parse.quote(ticker)
-    url = f"https://query1.finance.yahoo.com/v7/finance/spark?symbols={encoded_ticker}&range=1d&interval=1m"
-    data = _make_request(url)
-    if data:
-        try:
-            result = data.get("spark", {}).get("result", [{}])[0]
-            response = result.get("response", [{}])[0]
-            meta = response.get("meta", {})
-            price = meta.get("regularMarketPrice")
-            prev_close = meta.get("previousClose")
-            currency = meta.get("currency", "USD")
-            if price is not None:
-                return {"price": price, "previous_close": prev_close, "currency": currency}
-        except (IndexError, AttributeError, TypeError):
-            pass
-    
-    # 3순위: 일봉 API (최후의 fallback)
-    daily = _get_daily_data(ticker)
+    # 3. intraday 실패 시: 일봉 데이터로 fallback
     if daily and daily["closes"]:
-        prev_close = daily.get("previous_close")
-        if prev_close is None and len(daily["closes"]) >= 2:
-            prev_close = daily["closes"][-2]
         return {
             "price": daily["closes"][-1],
-            "previous_close": prev_close,
+            "previous_close": daily_prev_close,
             "currency": daily.get("currency", "USD")
         }
     

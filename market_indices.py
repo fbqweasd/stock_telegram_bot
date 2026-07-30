@@ -111,6 +111,35 @@ def fetch_fear_greed_index():
     return None
 
 
+def _extract_previous_close_from_daily(chart_result):
+    """
+    Yahoo Finance chart API 결과에서 daily OHLC 데이터를 기반으로
+    실제 전일 종가를 추출합니다.
+    
+    meta.chartPreviousClose는 range=5d로 요청 시 5일 전의 종가를 반환할 수 있으므로
+    daily OHLC 데이터에서 마지막에서 두 번째 유효 close 값을 사용합니다.
+    """
+    try:
+        quote = chart_result.get("indicators", {}).get("quote", [{}])[0]
+        closes = quote.get("close", [])
+        
+        if not closes:
+            return None
+        
+        # None이 아닌 close 값들만 추출
+        valid_closes = [c for c in closes if c is not None]
+        
+        if len(valid_closes) >= 2:
+            # 마지막에서 두 번째 값 = 실제 전일 종가
+            return valid_closes[-2]
+        elif len(valid_closes) == 1:
+            return valid_closes[0]
+        
+        return None
+    except (IndexError, AttributeError, TypeError):
+        return None
+
+
 def fetch_vix():
     """
     VIX (CBOE Volatility Index)를 가져옵니다.
@@ -118,7 +147,7 @@ def fetch_vix():
     반환: { value, change, change_pct, previous_close }
     """
     encoded_ticker = urllib.parse.quote("^VIX")
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=5d&interval=1d"
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=10d&interval=1d"
     
     try:
         response = _make_request(url)
@@ -128,7 +157,11 @@ def fetch_vix():
             meta = result.get("meta", {})
             
             current_price = meta.get("regularMarketPrice")
-            previous_close = meta.get("chartPreviousClose") or meta.get("previousClose")
+            
+            # 전일 종가: daily OHLC 데이터에서 직접 추출 (meta.chartPreviousClose는 range=10d일 때 부정확)
+            previous_close = _extract_previous_close_from_daily(result)
+            if previous_close is None:
+                previous_close = meta.get("chartPreviousClose") or meta.get("previousClose")
             
             if current_price and previous_close:
                 change = current_price - previous_close
@@ -164,7 +197,7 @@ def fetch_market_indices():
     
     for key, info in indices.items():
         encoded_symbol = urllib.parse.quote(info["symbol"])
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_symbol}?range=5d&interval=1d"
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_symbol}?range=10d&interval=1d"
         
         try:
             response = _make_request(url)
@@ -174,7 +207,11 @@ def fetch_market_indices():
                 meta = chart_result.get("meta", {})
                 
                 current_price = meta.get("regularMarketPrice")
-                previous_close = meta.get("chartPreviousClose") or meta.get("previousClose")
+                
+                # 전일 종가: daily OHLC 데이터에서 직접 추출 (meta.chartPreviousClose는 range=10d일 때 부정확)
+                previous_close = _extract_previous_close_from_daily(chart_result)
+                if previous_close is None:
+                    previous_close = meta.get("chartPreviousClose") or meta.get("previousClose")
                 
                 if current_price and previous_close:
                     change = current_price - previous_close
@@ -202,7 +239,7 @@ def fetch_usd_krw():
     반환: { value, change, change_pct, previous_close }
     """
     encoded_ticker = urllib.parse.quote("KRW=X")
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=5d&interval=1d"
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=10d&interval=1d"
     
     try:
         response = _make_request(url)
@@ -212,7 +249,11 @@ def fetch_usd_krw():
             meta = result.get("meta", {})
             
             current_price = meta.get("regularMarketPrice")
-            previous_close = meta.get("chartPreviousClose") or meta.get("previousClose")
+            
+            # 전일 종가: daily OHLC 데이터에서 직접 추출 (meta.chartPreviousClose는 range=10d일 때 부정확)
+            previous_close = _extract_previous_close_from_daily(result)
+            if previous_close is None:
+                previous_close = meta.get("chartPreviousClose") or meta.get("previousClose")
             
             if current_price and previous_close:
                 change = current_price - previous_close
@@ -237,7 +278,7 @@ def fetch_us_treasury_10y():
     반환: { value, change, change_pct, previous_close }
     """
     encoded_ticker = urllib.parse.quote("^TNX")
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=5d&interval=1d"
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=10d&interval=1d"
     
     try:
         response = _make_request(url)
@@ -247,7 +288,11 @@ def fetch_us_treasury_10y():
             meta = result.get("meta", {})
             
             current_price = meta.get("regularMarketPrice")
-            previous_close = meta.get("chartPreviousClose") or meta.get("previousClose")
+            
+            # 전일 종가: daily OHLC 데이터에서 직접 추출 (meta.chartPreviousClose는 range=10d일 때 부정확)
+            previous_close = _extract_previous_close_from_daily(result)
+            if previous_close is None:
+                previous_close = meta.get("chartPreviousClose") or meta.get("previousClose")
             
             if current_price and previous_close:
                 change = current_price - previous_close
