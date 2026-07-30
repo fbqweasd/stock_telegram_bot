@@ -140,7 +140,7 @@ def fetch_vix():
     반환: { value, change, change_pct, previous_close }
     """
     encoded_ticker = urllib.parse.quote("^VIX")
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=10d&interval=1d"
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=10d&interval=1d&includePrePost=true"
     
     try:
         response = _make_request(url)
@@ -190,7 +190,7 @@ def fetch_market_indices():
     
     for key, info in indices.items():
         encoded_symbol = urllib.parse.quote(info["symbol"])
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_symbol}?range=10d&interval=1d"
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_symbol}?range=10d&interval=1d&includePrePost=true"
         
         try:
             response = _make_request(url)
@@ -232,7 +232,7 @@ def fetch_usd_krw():
     반환: { value, change, change_pct, previous_close }
     """
     encoded_ticker = urllib.parse.quote("KRW=X")
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=10d&interval=1d"
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=10d&interval=1d&includePrePost=true"
     
     try:
         response = _make_request(url)
@@ -271,7 +271,7 @@ def fetch_us_treasury_10y():
     반환: { value, change, change_pct, previous_close }
     """
     encoded_ticker = urllib.parse.quote("^TNX")
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=10d&interval=1d"
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=10d&interval=1d&includePrePost=true"
     
     try:
         response = _make_request(url)
@@ -309,7 +309,7 @@ def fetch_us_dollar_index():
     Yahoo Finance에서 DX-Y.NYB 티커로 조회
     반환: { value, change, change_pct, previous_close }
     """
-    url = "https://query1.finance.yahoo.com/v8/finance/chart/DX-Y.NYB?range=10d&interval=1d"
+    url = "https://query1.finance.yahoo.com/v8/finance/chart/DX-Y.NYB?range=10d&interval=1d&includePrePost=true"
     
     try:
         response = _make_request(url)
