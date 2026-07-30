@@ -1,10 +1,11 @@
 """
 시장 인덱스 데이터 수집 모듈
-- CNN Fear & Greed Index (공포탐욕지수)
+- CNN Fear & Greed Index (공포탐욕지수) - CNN Money 공식 API
 - VIX (변동성 지수)
 - S&P 500, NASDAQ, DOW 지수
 - USD/KRW 환율
 - 미국 10년물 국채 수익률
+- US Dollar Index (달러 인덱스, DXY)
 """
 
 import urllib.request
@@ -44,7 +45,7 @@ def _make_request(url, headers=None, retries=3, delay=2):
 def fetch_fear_greed_index():
     """
     Fear & Greed Index (공포탐욕지수)를 가져옵니다.
-    Alternative.me API 사용 (CNN 데이터 기반)
+    CNN Money 공식 API 사용
     반환: { value, classification, previous_close, week_ago, month_ago }
     
     classification:
@@ -53,10 +54,11 @@ def fetch_fear_greed_index():
     - 50-74: Greed (탐욕)
     - 75-100: Extreme Greed (극도 탐욕)
     """
-    # Alternative.me Fear & Greed Index API
-    url = "https://api.alternative.me/fng/?limit=30&format=json"
+    # CNN Money Fear & Greed Index 공식 API
+    url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://money.cnn.com/",
         "Accept": "application/json"
     }
     
@@ -64,43 +66,34 @@ def fetch_fear_greed_index():
         response = _make_request(url, headers=headers)
         if response:
             data = json.loads(response)
-            fng_data = data.get("data", [])
+            fg = data.get("fear_and_greed", {})
             
-            if not fng_data:
+            if not fg or fg.get("score") is None:
                 return None
             
-            # 현재 값 (첫 번째 항목)
-            current = fng_data[0]
-            score = float(current.get("value", 0))
-            classification_en = current.get("value_classification", "")
+            score = float(fg["score"])
+            rating_en = fg.get("rating", "")
             
             # 분류 매핑
             classification_map = {
-                "Extreme Fear": "극도 공포",
-                "Fear": "공포",
-                "Neutral": "중립",
-                "Greed": "탐욕",
-                "Extreme Greed": "극도 탐욕"
+                "extreme fear": "극도 공포",
+                "fear": "공포",
+                "neutral": "중립",
+                "greed": "탐욕",
+                "extreme greed": "극도 탐욕"
             }
             
-            classification = classification_map.get(classification_en, classification_en)
+            classification = classification_map.get(rating_en.lower(), rating_en)
             
-            # 이전 값 (1일 전)
-            previous_close = None
-            week_ago = None
-            month_ago = None
-            
-            if len(fng_data) > 1:
-                previous_close = float(fng_data[1].get("value", 0))
-            if len(fng_data) > 7:
-                week_ago = float(fng_data[7].get("value", 0))
-            if len(fng_data) > 30:
-                month_ago = float(fng_data[30].get("value", 0))
+            # 이전 값들
+            previous_close = fg.get("previous_close")
+            week_ago = fg.get("previous_1_week")
+            month_ago = fg.get("previous_1_month")
             
             return {
                 "value": round(score, 1),
                 "classification": classification,
-                "rating_en": classification_en,
+                "rating_en": rating_en,
                 "previous_close": round(previous_close, 1) if previous_close else None,
                 "week_ago": round(week_ago, 1) if week_ago else None,
                 "month_ago": round(month_ago, 1) if month_ago else None
@@ -310,6 +303,44 @@ def fetch_us_treasury_10y():
     return None
 
 
+def fetch_us_dollar_index():
+    """
+    US Dollar Index (달러 인덱스, DXY)를 가져옵니다.
+    Yahoo Finance에서 DX-Y.NYB 티커로 조회
+    반환: { value, change, change_pct, previous_close }
+    """
+    url = "https://query1.finance.yahoo.com/v8/finance/chart/DX-Y.NYB?range=10d&interval=1d"
+    
+    try:
+        response = _make_request(url)
+        if response:
+            data = json.loads(response)
+            result = data.get("chart", {}).get("result", [{}])[0]
+            meta = result.get("meta", {})
+            
+            current_price = meta.get("regularMarketPrice")
+            
+            # 전일 종가
+            previous_close = _extract_previous_close_from_daily(result)
+            if previous_close is None:
+                previous_close = meta.get("chartPreviousClose") or meta.get("previousClose")
+            
+            if current_price and previous_close:
+                change = current_price - previous_close
+                change_pct = (change / previous_close) * 100
+                
+                return {
+                    "value": round(current_price, 2),
+                    "change": round(change, 2),
+                    "change_pct": round(change_pct, 2),
+                    "previous_close": round(previous_close, 2)
+                }
+    except Exception as e:
+        print(f"Error fetching US Dollar Index: {e}")
+    
+    return None
+
+
 def fetch_all_indices():
     """
     모든 시장 인덱스 데이터를 한 번에 가져옵니다.
@@ -319,6 +350,7 @@ def fetch_all_indices():
         indices: { sp500: {...}, nasdaq: {...}, dow: {...} },
         usd_krw: {...},
         treasury_10y: {...},
+        us_dollar_index: {...},
         timestamp: "..."
     }
     """
@@ -328,6 +360,7 @@ def fetch_all_indices():
         "indices": {},
         "usd_krw": None,
         "treasury_10y": None,
+        "us_dollar_index": None,
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() + 9 * 60 * 60))
     }
     
@@ -349,6 +382,10 @@ def fetch_all_indices():
     
     # US 10Y Treasury
     result["treasury_10y"] = fetch_us_treasury_10y()
+    time.sleep(0.5)
+    
+    # US Dollar Index (DXY)
+    result["us_dollar_index"] = fetch_us_dollar_index()
     
     return result
 
@@ -417,6 +454,15 @@ def check_extreme_conditions(data):
         if abs(tnx_change) >= 0.1:
             direction = "상승" if tnx_change > 0 else "하락"
             alerts.append(("TNX_MOVE", f"📊 미국 10년물 국채 {tnx_value:.3f}% ({direction} {abs(tnx_change):.3f}%p)"))
+    
+    # 6. 달러 인덱스 급변동 체크
+    if data.get("us_dollar_index"):
+        dxy_change = data["us_dollar_index"].get("change_pct", 0)
+        dxy_value = data["us_dollar_index"].get("value", 0)
+        
+        if abs(dxy_change) >= 1:
+            direction = "상승" if dxy_change > 0 else "하락"
+            alerts.append(("DXY_MOVE", f"💵 달러 인덱스 {dxy_value:.2f} ({direction} {abs(dxy_change):.2f}%)"))
     
     return alerts
 
@@ -528,6 +574,17 @@ def format_indices_report(data):
         lines.append(f"\n<b>🏛️ 미국 10년물 국채</b>")
         lines.append(f"{emoji} <b>{value:.3f}%</b> ({change:+.3f}%p)")
     
+    # US Dollar Index (DXY)
+    dxy = data.get("us_dollar_index")
+    if dxy:
+        value = dxy["value"]
+        change_pct = dxy.get("change_pct", 0)
+        
+        emoji = "📈" if change_pct > 0 else "📉" if change_pct < 0 else "➡️"
+        
+        lines.append(f"\n<b>💵 달러 인덱스 (DXY)</b>")
+        lines.append(f"{emoji} <b>{value:.2f}</b> ({change_pct:+.2f}%)")
+    
     lines.append("\n━━━━━━━━━━━━━━━━━━━")
     
     return "\n".join(lines)
@@ -603,6 +660,13 @@ def format_pre_market_report(data):
         value = tnx["value"]
         change = tnx.get("change", 0)
         lines.append(f"<b>🏛️ 미국 10년물:</b> {value:.3f}% ({change:+.3f}%p)")
+    
+    # US Dollar Index (DXY)
+    dxy = data.get("us_dollar_index")
+    if dxy:
+        value = dxy["value"]
+        change_pct = dxy.get("change_pct", 0)
+        lines.append(f"<b>💵 달러 인덱스:</b> {value:.2f} ({change_pct:+.2f}%)")
     
     # 극단 조건 경고
     extreme_alerts = check_extreme_conditions(data)
