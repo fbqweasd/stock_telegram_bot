@@ -4,12 +4,15 @@ from config import CHECK_INTERVAL
 import database
 import stock_api
 import indicators
+import market_indices
 
 class AlertScheduler:
     def __init__(self, bot_instance):
         self.bot = bot_instance
         self.is_running = False
         self.scheduler_thread = None
+        self.last_premarket_alert_date = None  # 장 시작 전 알림 날짜 추적
+        self.last_extreme_check_date = None  # 극단 조건 체크 날짜 추적
 
     def start(self):
         """
@@ -36,6 +39,12 @@ class AlertScheduler:
         
         while self.is_running:
             try:
+                # 장 시작 전 알림 체크 (한국 시간 기준 8:30~9:00)
+                self._check_premarket_alert()
+                
+                # 극단적 시장 조건 체크 (하루 2~3번)
+                self._check_extreme_market_conditions()
+                
                 print("⏳ Periodic stock check sequence initiated...")
                 self._check_all_subscribed_stocks()
                 print("✅ Periodic stock check complete.")
@@ -47,6 +56,122 @@ class AlertScheduler:
                 if not self.is_running:
                     break
                 time.sleep(1)
+
+    def _check_premarket_alert(self):
+        """
+        장 시작 전 (한국 시간 8:30~9:00) 시장 인덱스 알림을 전송합니다.
+        하루에 한 번만 전송됩니다.
+        """
+        kst_offset = 9 * 60 * 60
+        now_kst = time.gmtime(time.time() + kst_offset)
+        today_str = time.strftime("%Y-%m-%d", now_kst)
+        hour = now_kst.tm_hour
+        minute = now_kst.tm_min
+        
+        # 이미 오늘 보냈으면 스킵
+        if self.last_premarket_alert_date == today_str:
+            return
+        
+        # 한국 시간 8:30~9:00 사이에만 전송
+        if not (hour == 8 and minute >= 30) and not (hour == 9 and minute == 0):
+            return
+        
+        # 구독자가 없으면 스킵
+        if not database.get_all_subscriptions():
+            return
+        
+        try:
+            print("🌅 Sending pre-market alert...")
+            
+            # 시장 인덱스 데이터 가져오기
+            data = market_indices.fetch_all_indices()
+            
+            # 리포트 생성
+            report_text = market_indices.format_pre_market_report(data)
+            
+            # 모든 구독자에게 전송
+            all_subscriptions = database.get_all_subscriptions()
+            sent_to_chats = set()
+            
+            for chat_id, ticker in all_subscriptions:
+                if chat_id in sent_to_chats:
+                    continue
+                
+                topic_id = database.get_chat_topic(chat_id)
+                self.bot.send_message(chat_id, report_text, message_thread_id=topic_id)
+                sent_to_chats.add(chat_id)
+            
+            self.last_premarket_alert_date = today_str
+            print("✅ Pre-market alert sent successfully.")
+            
+        except Exception as e:
+            print(f"Error sending pre-market alert: {e}")
+
+    def _check_extreme_market_conditions(self):
+        """
+        극단적 시장 조건을 체크하고 알림을 전송합니다.
+        - VIX 30 이상 (시장 공포 극대화)
+        - 공포탐욕지수 15 이하 또는 85 이상
+        - 주요 지수 3% 이상 급등락
+        - 환율 2% 이상 급변동
+        
+        하루에 최대 3번까지 전송 (과도한 알림 방지)
+        """
+        kst_offset = 9 * 60 * 60
+        now_kst = time.gmtime(time.time() + kst_offset)
+        today_str = time.strftime("%Y-%m-%d", now_kst)
+        hour = now_kst.tm_hour
+        
+        # 이미 오늘 3번 보냈으면 스킵
+        if self.last_extreme_check_date == today_str:
+            return
+        
+        # 장 시간 중에만 체크 (한국 시간 9:00~16:00)
+        if hour < 9 or hour >= 16:
+            return
+        
+        # 구독자가 없으면 스킵
+        if not database.get_all_subscriptions():
+            return
+        
+        try:
+            # 시장 인덱스 데이터 가져오기
+            data = market_indices.fetch_all_indices()
+            
+            # 극단 조건 체크
+            extreme_alerts = market_indices.check_extreme_conditions(data)
+            
+            if not extreme_alerts:
+                return
+            
+            # 알림 생성
+            alert_text = "<b>🚨 극단적 시장 조건 감지</b>\n"
+            alert_text += f"⏱ 시간: <code>{time.strftime('%Y-%m-%d %H:%M', now_kst)}</code>\n"
+            alert_text += "━━━━━━━━━━━━━━━━━━━\n\n"
+            
+            for alert_type, message in extreme_alerts:
+                alert_text += f"{message}\n"
+            
+            alert_text += "\n━━━━━━━━━━━━━━━━━━━\n"
+            alert_text += "<i>💡 /indices 명령어로 상세 현황을 확인하세요.</i>"
+            
+            # 모든 구독자에게 전송
+            all_subscriptions = database.get_all_subscriptions()
+            sent_to_chats = set()
+            
+            for chat_id, ticker in all_subscriptions:
+                if chat_id in sent_to_chats:
+                    continue
+                
+                topic_id = database.get_chat_topic(chat_id)
+                self.bot.send_message(chat_id, alert_text, message_thread_id=topic_id)
+                sent_to_chats.add(chat_id)
+            
+            self.last_extreme_check_date = today_str
+            print(f"⚠️ Extreme market alert sent: {len(extreme_alerts)} conditions detected.")
+            
+        except Exception as e:
+            print(f"Error checking extreme market conditions: {e}")
 
     def _check_all_subscribed_stocks(self):
         """

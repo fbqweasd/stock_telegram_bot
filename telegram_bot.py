@@ -9,6 +9,7 @@ from config import TELEGRAM_BOT_TOKEN
 import database
 import stock_api
 import predictor
+import market_indices
 
 class TelegramBot:
     def __init__(self):
@@ -185,7 +186,11 @@ class TelegramBot:
             "/p": "/predict",
             "/settopic": "/settopic",
             "/토픽설정": "/settopic",
-            "/topic": "/settopic"
+            "/topic": "/settopic",
+            "/indices": "/indices",
+            "/지수": "/indices",
+            "/시장": "/indices",
+            "/i": "/indices"
         }
         
         # 명령어 정규화
@@ -205,6 +210,8 @@ class TelegramBot:
             self._handle_predict(chat_id, arg, reply_to_message_id, message_thread_id)
         elif normalized_cmd == "/settopic":
             self._handle_settopic(chat_id, arg, reply_to_message_id, message_thread_id)
+        elif normalized_cmd == "/indices":
+            self._handle_indices(chat_id, reply_to_message_id, message_thread_id)
         else:
             self.send_message(chat_id, "⚠️ 알 수 없는 명령어입니다. 사용 가능한 명령어를 보려면 /help 를 입력하세요.",
                             reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
@@ -232,10 +239,24 @@ class TelegramBot:
             "<i>전일 종가 대비 변동률도 함께 표시됩니다.</i>\n\n"
             "📌 <b>/predict [티커]</b> 또는 <b>/예측 [티커]</b> - 특정 주식의 기술적 지표 분석 및 매수/매도 예측 가격을 즉시 조회합니다.\n"
             "<i>예시: /predict TSLA, /예측 AAPL</i>\n\n"
+            "📌 <b>/indices</b> 또는 <b>/지수</b> 또는 <b>/시장</b> - 현재 시장 인덱스 현황을 조회합니다.\n"
+            "<i>공포탐욕지수, VIX, 주요 지수(S&P500, NASDAQ, DOW), 환율, 국채수익률을 한눈에 확인</i>\n\n"
             "📌 <b>/help</b> 또는 <b>/도움말</b> - 이 도움말을 표시합니다.\n\n"
-            "🔔 <b>자동 가격 변동 알림</b>\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            "🔔 <b>자동 알림 기능</b>\n\n"
+            "📊 <b>가격 변동 알림</b>\n"
             "등록된 종목이 전일 종가 대비 <b>5%, 10%, 20%</b> 이상 변동하면 자동으로 알림을 보내드립니다.\n"
             "하루에 1번만 알림이 전송되며, 더 큰 변동이 먼저 발생하면 작은 변동은 알리지 않습니다.\n\n"
+            "🌅 <b>장 시작 전 시장 현황 (매일 8:30)</b>\n"
+            "매일 한국 시간 <b>8:30</b>에 시장 인덱스 현황을 자동으로 전송합니다.\n"
+            "공포탐욕지수, VIX, 주요 지수, 환율 등을 확인하고 하루를 시작하세요!\n\n"
+            "🚨 <b>극단적 시장 조건 알림</b>\n"
+            "다음 조건 감지 시 자동으로 알림을 보내드립니다:\n"
+            "• VIX 25 이상 (변동성 확대)\n"
+            "• 공포탐욕지수 25 이하 또는 75 이상\n"
+            "• 주요 지수 2% 이상 급등락\n"
+            "• 원/달러 환율 2% 이상 급변동\n\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
             "💡 <b>티커 팁:</b>\n"
             "- 미국 주식: 티커명 그대로 입력 (AAPL, TSLA, MSFT)\n"
             "- 한국 코스피: 종목코드.KS 입력 (005930.KS, 000660.KS)\n"
@@ -593,6 +614,61 @@ class TelegramBot:
         
         # 결과 전송 후 로딩 메시지 삭제
         self.send_message(chat_id, report_text, reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
+        if loading_msg_id:
+            try:
+                self.delete_message(chat_id, loading_msg_id)
+            except Exception:
+                pass
+
+    def _handle_indices(self, chat_id, reply_to_message_id=None, message_thread_id=None):
+        """
+        시장 인덱스 현황을 조회합니다.
+        - 공포탐욕지수 (Fear & Greed Index)
+        - VIX (변동성 지수)
+        - S&P 500, NASDAQ, DOW 지수
+        - USD/KRW 환율
+        - 미국 10년물 국채 수익률
+        """
+        # "가져오는 중..." 메시지를 보내고 message_id를 저장
+        loading_msg_id = self.send_message(
+            chat_id, 
+            "📊 시장 인덱스 데이터를 가져오는 중...\n"
+            "<i>(공포탐욕지수, VIX, 주요 지수, 환율, 국채수익률)</i>",
+            reply_to_message_id=reply_to_message_id, 
+            message_thread_id=message_thread_id
+        )
+        
+        try:
+            # 모든 인덱스 데이터 가져오기
+            data = market_indices.fetch_all_indices()
+            
+            # 리포트 생성
+            report_text = market_indices.format_indices_report(data)
+            
+            # 극단 조건이 있으면 경고 추가
+            extreme_alerts = market_indices.check_extreme_conditions(data)
+            if extreme_alerts:
+                report_text += "\n\n<b>⚠️ 극단 조건 경고</b>\n"
+                for alert_type, message in extreme_alerts:
+                    report_text += f"• {message}\n"
+            
+            # 결과 전송
+            self.send_message(
+                chat_id, 
+                report_text, 
+                reply_to_message_id=reply_to_message_id, 
+                message_thread_id=message_thread_id
+            )
+            
+        except Exception as e:
+            self.send_message(
+                chat_id, 
+                f"⚠️ 시장 인덱스 데이터 조회 실패: {str(e)}",
+                reply_to_message_id=reply_to_message_id, 
+                message_thread_id=message_thread_id
+            )
+        
+        # 로딩 메시지 삭제
         if loading_msg_id:
             try:
                 self.delete_message(chat_id, loading_msg_id)
