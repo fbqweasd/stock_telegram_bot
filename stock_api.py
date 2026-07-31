@@ -206,6 +206,140 @@ def _get_daily_data(ticker):
         return None
 
 
+def _get_intraday_data(ticker, interval="5m", range_str="5d"):
+    """
+    분/시간봉 데이터를 가져옵니다 (기술적 지표 계산용).
+    
+    interval: 5m, 15m, 30m, 60m, 1h
+    range: 1d, 5d, 1mo, 3mo (interval에 따라 적절히 선택)
+    
+    반환: { closes, highs, lows, opens, volumes, timestamps, currency }
+    """
+    encoded_ticker = urllib.parse.quote(ticker)
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range={range_str}&interval={interval}&includePrePost=true"
+    
+    data = _make_request(url)
+    if not data:
+        return None
+    
+    try:
+        result = data.get("chart", {}).get("result", [{}])[0]
+        meta = result.get("meta", {})
+        currency = meta.get("currency", "USD")
+        
+        timestamps = result.get("timestamp", [])
+        quote = result.get("indicators", {}).get("quote", [{}])[0]
+        
+        closes = quote.get("close", [])
+        highs = quote.get("high", [])
+        lows = quote.get("low", [])
+        opens = quote.get("open", [])
+        volumes = quote.get("volume", [])
+        
+        if not timestamps or not closes:
+            return None
+        
+        # Data cleansing
+        cleaned = {
+            "timestamps": [],
+            "closes": [],
+            "highs": [],
+            "lows": [],
+            "opens": [],
+            "volumes": []
+        }
+        
+        for i in range(len(timestamps)):
+            if (i < len(closes) and closes[i] is not None and
+                i < len(highs) and highs[i] is not None and
+                i < len(lows) and lows[i] is not None and
+                i < len(opens) and opens[i] is not None):
+                
+                cleaned["timestamps"].append(timestamps[i])
+                cleaned["closes"].append(closes[i])
+                cleaned["highs"].append(highs[i])
+                cleaned["lows"].append(lows[i])
+                cleaned["opens"].append(opens[i])
+                cleaned["volumes"].append(
+                    volumes[i] if (i < len(volumes) and volumes[i] is not None) else 0
+                )
+        
+        # 지표 계산에 필요한 최소 데이터 포인트 (MACD에 slow(26) + signal(9) = 35 필요)
+        if len(cleaned["closes"]) < 40:
+            return None
+        
+        cleaned["currency"] = currency
+        return cleaned
+        
+    except (IndexError, AttributeError, TypeError):
+        return None
+
+
+def _get_weekly_data(ticker):
+    """
+    주봉 데이터를 가져옵니다 (기술적 지표 계산용).
+    range=2y, interval=1wk → 약 104개의 주봉 데이터
+    반환: { closes, highs, lows, opens, volumes, timestamps, currency }
+    """
+    encoded_ticker = urllib.parse.quote(ticker)
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=2y&interval=1wk&includePrePost=true"
+    
+    data = _make_request(url)
+    if not data:
+        return None
+    
+    try:
+        result = data.get("chart", {}).get("result", [{}])[0]
+        meta = result.get("meta", {})
+        currency = meta.get("currency", "USD")
+        
+        timestamps = result.get("timestamp", [])
+        quote = result.get("indicators", {}).get("quote", [{}])[0]
+        
+        closes = quote.get("close", [])
+        highs = quote.get("high", [])
+        lows = quote.get("low", [])
+        opens = quote.get("open", [])
+        volumes = quote.get("volume", [])
+        
+        if not timestamps or not closes:
+            return None
+        
+        # Data cleansing
+        cleaned = {
+            "timestamps": [],
+            "closes": [],
+            "highs": [],
+            "lows": [],
+            "opens": [],
+            "volumes": []
+        }
+        
+        for i in range(len(timestamps)):
+            if (i < len(closes) and closes[i] is not None and
+                i < len(highs) and highs[i] is not None and
+                i < len(lows) and lows[i] is not None and
+                i < len(opens) and opens[i] is not None):
+                
+                cleaned["timestamps"].append(timestamps[i])
+                cleaned["closes"].append(closes[i])
+                cleaned["highs"].append(highs[i])
+                cleaned["lows"].append(lows[i])
+                cleaned["opens"].append(opens[i])
+                cleaned["volumes"].append(
+                    volumes[i] if (i < len(volumes) and volumes[i] is not None) else 0
+                )
+        
+        if len(cleaned["closes"]) < 40:
+            return None
+        
+        cleaned["currency"] = currency
+        return cleaned
+        
+    except (IndexError, AttributeError, TypeError):
+        return None
+
+
 def fetch_stock_data(ticker):
     """
     Fetches historical daily data + realtime price from Yahoo Finance API.
@@ -254,6 +388,92 @@ def fetch_stock_data(ticker):
     }
 
 
+def fetch_stock_data_intraday(ticker, interval="5m", range_str="5d"):
+    """
+    5분봉(기본) 단기 데이터를 가져와서 기술적 지표 분석에 사용합니다.
+    단기 트레이딩(1~2일) 예측에 적합합니다.
+    
+    interval: 5m, 15m, 30m, 60m, 1h
+    range_str: 1d, 5d, 1mo (interval에 따라 자동 조정 권장)
+    
+    Returns a dictionary compatible with predictor functions, or None if failed.
+    """
+    ticker = ticker.strip().upper()
+    
+    # 1. 분봉 데이터
+    intraday = _get_intraday_data(ticker, interval=interval, range_str=range_str)
+    if not intraday:
+        return None
+    
+    # 2. 현재가 (마지막 유효 close)
+    closes = intraday["closes"]
+    current_price = closes[-1] if closes else None
+    if current_price is None:
+        return None
+    
+    currency = intraday.get("currency", "USD")
+    
+    # interval에 따른 봉 이름
+    interval_names = {
+        "5m": "5분봉", "15m": "15분봉", "30m": "30분봉",
+        "60m": "60분봉", "1h": "1시간봉"
+    }
+    candle_name = interval_names.get(interval, f"{interval}봉")
+    
+    return {
+        "ticker": ticker,
+        "currency": currency,
+        "current_price": current_price,
+        "timeframe": "intraday",
+        "candle_name": candle_name,
+        "interval": interval,
+        "timestamps": intraday["timestamps"],
+        "closes": intraday["closes"],
+        "highs": intraday["highs"],
+        "lows": intraday["lows"],
+        "opens": intraday["opens"],
+        "volumes": intraday["volumes"]
+    }
+
+
+def fetch_stock_data_weekly(ticker):
+    """
+    주봉 데이터를 가져와서 기술적 지표 분석에 사용합니다.
+    장기 트레이딩(1~3개월) 예측에 적합합니다.
+    
+    Returns a dictionary compatible with predictor functions, or None if failed.
+    """
+    ticker = ticker.strip().upper()
+    
+    # 1. 주봉 데이터
+    weekly = _get_weekly_data(ticker)
+    if not weekly:
+        return None
+    
+    # 2. 현재가 (마지막 유효 close)
+    closes = weekly["closes"]
+    current_price = closes[-1] if closes else None
+    if current_price is None:
+        return None
+    
+    currency = weekly.get("currency", "USD")
+    
+    return {
+        "ticker": ticker,
+        "currency": currency,
+        "current_price": current_price,
+        "timeframe": "weekly",
+        "candle_name": "주봉",
+        "interval": "1wk",
+        "timestamps": weekly["timestamps"],
+        "closes": weekly["closes"],
+        "highs": weekly["highs"],
+        "lows": weekly["lows"],
+        "opens": weekly["opens"],
+        "volumes": weekly["volumes"]
+    }
+
+
 def fetch_current_price_only(ticker):
     """
     가벼운 현재가 조회용 함수.
@@ -290,15 +510,36 @@ def fetch_current_price_only(ticker):
 if __name__ == "__main__":
     # Test
     for t in ["AAPL", "005930.KS"]:
+        # 1. 기존 일봉 데이터
         data = fetch_stock_data(t)
         if data:
-            print(f"\n=== {t} ===")
+            print(f"\n=== {t} (일봉) ===")
             print(f"  Current Price: {data['current_price']} {data['currency']}")
             print(f"  Previous Close: {data['previous_close']}")
             print(f"  Market State: {data['market_state']}")
             print(f"  Daily Data Points: {len(data['closes'])}")
         else:
-            print(f"\n=== {t} === Failed")
+            print(f"\n=== {t} (일봉) === Failed")
+        
+        # 2. 5분봉 데이터
+        data5 = fetch_stock_data_intraday(t, interval="5m", range_str="5d")
+        if data5:
+            print(f"\n=== {t} (5분봉) ===")
+            print(f"  Current Price: {data5['current_price']} {data5['currency']}")
+            print(f"  Candle: {data5['candle_name']}")
+            print(f"  Data Points: {len(data5['closes'])}")
+        else:
+            print(f"\n=== {t} (5분봉) === Failed")
+        
+        # 3. 주봉 데이터
+        data_w = fetch_stock_data_weekly(t)
+        if data_w:
+            print(f"\n=== {t} (주봉) ===")
+            print(f"  Current Price: {data_w['current_price']} {data_w['currency']}")
+            print(f"  Candle: {data_w['candle_name']}")
+            print(f"  Data Points: {len(data_w['closes'])}")
+        else:
+            print(f"\n=== {t} (주봉) === Failed")
         
         price_only = fetch_current_price_only(t)
         if price_only:

@@ -282,7 +282,7 @@ def predict_buy_sell_prices(stock_data):
     # Sell Target: Bollinger Upper + Resistance weighted
     sell_target = (0.6 * bb_upper) + (0.4 * resistance)
     
-    return {
+    result = {
         "ticker": stock_data["ticker"],
         "currency": stock_data["currency"],
         "current_price": round(current_price, 2),
@@ -310,6 +310,14 @@ def predict_buy_sell_prices(stock_data):
             "volume_ratio": round(volume_ratio, 2)
         }
     }
+    
+    # 캔들 정보 (timeframe)이 있으면 결과에 추가
+    if "candle_name" in stock_data:
+        result["candle_name"] = stock_data["candle_name"]
+    if "timeframe" in stock_data:
+        result["timeframe"] = stock_data["timeframe"]
+    
+    return result
 
 if __name__ == "__main__":
     # Small local test - downtrend (should be SELL)

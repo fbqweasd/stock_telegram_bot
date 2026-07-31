@@ -184,6 +184,12 @@ class TelegramBot:
             "/predict": "/predict",
             "/예측": "/predict",
             "/p": "/predict",
+            "/predict_short": "/predict_short",
+            "/단기예측": "/predict_short",
+            "/ps": "/predict_short",
+            "/predict_weekly": "/predict_weekly",
+            "/장기예측": "/predict_weekly",
+            "/pw": "/predict_weekly",
             "/settopic": "/settopic",
             "/토픽설정": "/settopic",
             "/topic": "/settopic",
@@ -208,6 +214,10 @@ class TelegramBot:
             self._handle_list(chat_id, reply_to_message_id, message_thread_id)
         elif normalized_cmd == "/predict":
             self._handle_predict(chat_id, arg, reply_to_message_id, message_thread_id)
+        elif normalized_cmd == "/predict_short":
+            self._handle_predict_short(chat_id, arg, reply_to_message_id, message_thread_id)
+        elif normalized_cmd == "/predict_weekly":
+            self._handle_predict_weekly(chat_id, arg, reply_to_message_id, message_thread_id)
         elif normalized_cmd == "/settopic":
             self._handle_settopic(chat_id, arg, reply_to_message_id, message_thread_id)
         elif normalized_cmd == "/indices":
@@ -239,6 +249,12 @@ class TelegramBot:
             "<i>전일 종가 대비 변동률도 함께 표시됩니다.</i>\n\n"
             "📌 <b>/predict [티커]</b> 또는 <b>/예측 [티커]</b> - 특정 주식의 기술적 지표 분석 및 매수/매도 예측 가격을 즉시 조회합니다.\n"
             "<i>예시: /predict TSLA, /예측 AAPL</i>\n\n"
+            "📌 <b>/predict_short [티커]</b> 또는 <b>/ps [티커]</b> - <b>5분봉</b> 기준 단기 예측을 제공합니다.\n"
+            "<i>단기 트레이딩(수시간~1일)에 적합한 분석을 제공합니다.</i>\n"
+            "<i>예시: /ps AAPL, /단기예측 TSLA</i>\n\n"
+            "📌 <b>/predict_weekly [티커]</b> 또는 <b>/pw [티커]</b> - <b>주봉</b> 기준 장기 예측을 제공합니다.\n"
+            "<i>장기 투자(수주~3개월)에 적합한 분석을 제공합니다.</i>\n"
+            "<i>예시: /pw AAPL, /장기예측 TSLA</i>\n\n"
             "📌 <b>/indices</b> 또는 <b>/지수</b> 또는 <b>/시장</b> - 현재 시장 인덱스 현황을 조회합니다.\n"
             "<i>공포탐욕지수, VIX, 주요 지수(S&P500, NASDAQ, DOW), 환율, 국채수익률을 한눈에 확인</i>\n\n"
             "📌 <b>/help</b> 또는 <b>/도움말</b> - 이 도움말을 표시합니다.\n\n"
@@ -619,6 +635,266 @@ class TelegramBot:
                 self.delete_message(chat_id, loading_msg_id)
             except Exception:
                 pass
+
+    def _handle_predict_short(self, chat_id, arg, reply_to_message_id=None, message_thread_id=None):
+        """
+        5분봉 기반 단기 예측 핸들러.
+        /predict_short [ticker] 또는 /ps [ticker] 또는 /단기예측 [ticker]
+        """
+        if not arg:
+            self.send_message(chat_id, "⚠️ 사용법: <code>/predict_short [티커]</code>\n예시: <code>/ps AAPL</code> (5분봉 단기 예측)",
+                            reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
+            return
+            
+        ticker = arg.upper().strip()
+        loading_msg_id = self.send_message(chat_id, f"📊 <code>{html.escape(ticker)}</code> 5분봉 기준 단기 기술적 분석을 수행하고 있습니다...",
+                        reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
+        
+        # 5분봉 데이터 가져오기
+        stock_data = stock_api.fetch_stock_data_intraday(ticker, interval="5m", range_str="5d")
+        if not stock_data:
+            # fallback: 15분봉 시도
+            stock_data = stock_api.fetch_stock_data_intraday(ticker, interval="15m", range_str="5d")
+        
+        if not stock_data:
+            self.send_message(chat_id, f"❌ <code>{html.escape(ticker)}</code> 단기 차트 데이터를 가져오지 못했습니다. 티커명을 확인하세요.",
+                            reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
+            if loading_msg_id:
+                try:
+                    self.delete_message(chat_id, loading_msg_id)
+                except Exception:
+                    pass
+            return
+            
+        analysis = predictor.predict_buy_sell_prices(stock_data)
+        if "error" in analysis:
+            self.send_message(chat_id, f"⚠️ 단기 분석 실패: {html.escape(analysis['error'])}",
+                            reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
+            if loading_msg_id:
+                try:
+                    self.delete_message(chat_id, loading_msg_id)
+                except Exception:
+                    pass
+            return
+            
+        # 리포트 포맷팅 (공통 메서드 활용)
+        report_text = self._format_prediction_report(analysis, uses_short_term=True)
+        self.send_message(chat_id, report_text, reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
+        if loading_msg_id:
+            try:
+                self.delete_message(chat_id, loading_msg_id)
+            except Exception:
+                pass
+
+    def _handle_predict_weekly(self, chat_id, arg, reply_to_message_id=None, message_thread_id=None):
+        """
+        주봉 기반 장기 예측 핸들러.
+        /predict_weekly [ticker] 또는 /pw [ticker] 또는 /장기예측 [ticker]
+        """
+        if not arg:
+            self.send_message(chat_id, "⚠️ 사용법: <code>/predict_weekly [티커]</code>\n예시: <code>/pw AAPL</code> (주봉 장기 예측)",
+                            reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
+            return
+            
+        ticker = arg.upper().strip()
+        loading_msg_id = self.send_message(chat_id, f"📊 <code>{html.escape(ticker)}</code> 주봉 기준 장기 기술적 분석을 수행하고 있습니다...",
+                        reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
+        
+        # 주봉 데이터 가져오기
+        stock_data = stock_api.fetch_stock_data_weekly(ticker)
+        if not stock_data:
+            self.send_message(chat_id, f"❌ <code>{html.escape(ticker)}</code> 주봉 데이터를 가져오지 못했습니다. 티커명을 확인하세요.",
+                            reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
+            if loading_msg_id:
+                try:
+                    self.delete_message(chat_id, loading_msg_id)
+                except Exception:
+                    pass
+            return
+            
+        analysis = predictor.predict_buy_sell_prices(stock_data)
+        if "error" in analysis:
+            self.send_message(chat_id, f"⚠️ 장기 분석 실패: {html.escape(analysis['error'])}",
+                            reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
+            if loading_msg_id:
+                try:
+                    self.delete_message(chat_id, loading_msg_id)
+                except Exception:
+                    pass
+            return
+            
+        # 리포트 포맷팅 (공통 메서드 활용)
+        report_text = self._format_prediction_report(analysis, uses_short_term=False)
+        self.send_message(chat_id, report_text, reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
+        if loading_msg_id:
+            try:
+                self.delete_message(chat_id, loading_msg_id)
+            except Exception:
+                pass
+
+    def _format_prediction_report(self, analysis, uses_short_term=False):
+        """
+        분석 결과를 HTML 포맷의 리포트 문자열로 변환합니다.
+        uses_short_term: True면 단기(분봉), False면 장기(주봉) 헤더 표시
+        """
+        currency = html.escape(str(analysis["currency"]))
+        rec = analysis["recommendation"]
+        ticker_safe = html.escape(str(analysis["ticker"]))
+        
+        # 캔들 정보 (timeframe)
+        candle_name = analysis.get("candle_name", "")
+        if not candle_name:
+            candle_name = "5분봉" if uses_short_term else "주봉"
+        elif uses_short_term and candle_name not in ("5분봉", "15분봉", "30분봉", "60분봉", "1시간봉"):
+            candle_name = "5분봉"
+        elif not uses_short_term and candle_name != "주봉":
+            candle_name = "주봉"
+        
+        # 분석 기준 시간 표시
+        timeframe_label = "단기(분봉)" if uses_short_term else "장기(주봉)"
+        
+        # Color rating decoration
+        emoji = "⚪"
+        if "STRONG BUY" in rec:
+            emoji = "🟢🔥"
+        elif "BUY" in rec:
+            emoji = "🟢"
+        elif "STRONG SELL" in rec:
+            emoji = "🔴🔥"
+        elif "SELL" in rec:
+            emoji = "🔴"
+        else:
+            emoji = "🟡"
+            
+        indicators = analysis["indicators"]
+        signals = analysis.get("signals", [])
+        score = analysis.get("score", 0)
+        
+        # 점수 해석
+        score_interpretation = ""
+        if score >= 4.0:
+            score_interpretation = "매우 강한 매수 신호 (점수: +{:.1f})".format(score)
+        elif score >= 2.0:
+            score_interpretation = "강한 매수 신호 (점수: +{:.1f})".format(score)
+        elif score >= 0.5:
+            score_interpretation = "약한 매수 신호 (점수: +{:.1f})".format(score)
+        elif score <= -4.0:
+            score_interpretation = "매우 강한 매도 신호 (점수: {:.1f})".format(score)
+        elif score <= -2.0:
+            score_interpretation = "강한 매도 신호 (점수: {:.1f})".format(score)
+        elif score <= -0.5:
+            score_interpretation = "약한 매도 신호 (점수: {:.1f})".format(score)
+        else:
+            score_interpretation = "중립 (점수: {:.1f})".format(score)
+        
+        current_price = analysis['current_price']
+        buy_target = analysis['buy_target']
+        sell_target = analysis['sell_target']
+        buy_discount = ((current_price - buy_target) / current_price * 100) if current_price > 0 else 0
+        sell_premium = ((sell_target - current_price) / current_price * 100) if current_price > 0 else 0
+        
+        # 봉 종류에 따른 설명
+        candle_desc = candle_name
+        if uses_short_term:
+            period_desc = "단기(수시간~1일)"
+            sma_desc = "20봉/50봉선"
+            bb_desc = "볼린저밴드(20봉)"
+            rsi_desc = "RSI(14봉)"
+            sr_desc = "지지/저항선(20봉)"
+        else:
+            period_desc = "장기(수주~3개월)"
+            sma_desc = "20주/50주선"
+            bb_desc = "볼린저밴드(20주)"
+            rsi_desc = "RSI(14주)"
+            sr_desc = "지지/저항선(20주)"
+        
+        report_text = (
+            f"<b>📊 [{ticker_safe}] {candle_desc} 기술적 분석 리포트</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"🕯 <b>분석 기준:</b> {candle_desc} ({period_desc})\n"
+            f"💵 현재가: <b>{current_price:.2f} {currency}</b>\n"
+            f"📢 추천 등급: <b>{emoji} {html.escape(rec)}</b>\n"
+            f"🎯 예측 신뢰도: <b>{analysis['confidence']}%</b>\n"
+            f"📊 종합 점수: <b>{html.escape(score_interpretation)}</b>\n\n"
+            f"🎯 <b>최적의 매수 목표가 ({candle_desc}):</b>\n"
+            f"👉 <code>{buy_target:.2f} {currency}</code> 이하 추천\n"
+            f"<i>(현재가 대비 {buy_discount:.1f}% 하락 시 매수 기회)</i>\n"
+            f"<i>산출 기준: {candle_desc} 볼린저 하단(60%) + 지지선(40%)</i>\n\n"
+            f"🎯 <b>최적의 매도 목표가 ({candle_desc}):</b>\n"
+            f"👉 <code>{sell_target:.2f} {currency}</code> 이상 추천\n"
+            f"<i>(현재가 대비 {sell_premium:.1f}% 상승 시 매도 기회)</i>\n"
+            f"<i>산출 기준: {candle_desc} 볼린저 상단(60%) + 저항선(40%)</i>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>🔍 판단 근거 (8개 지표, {candle_desc} 기준)</b>\n"
+        )
+        
+        # 신호 설명 추가 (최대 5개)
+        if signals:
+            for i, signal in enumerate(signals[:5], 1):
+                report_text += f"{i}. {html.escape(signal)}\n"
+        else:
+            report_text += "분석된 신호가 없습니다.\n"
+        
+        # RSI 상태 설명
+        rsi_val = indicators['rsi']
+        rsi_status = ""
+        if rsi_val >= 70:
+            rsi_status = "과매수 ⚠️ (하락 가능성)"
+        elif rsi_val >= 60:
+            rsi_status = "고평가 구간 (주의)"
+        elif rsi_val >= 45:
+            rsi_status = "중립 (안정적)"
+        elif rsi_val >= 30:
+            rsi_status = "저평가 구간 (관심)"
+        else:
+            rsi_status = "과매도 ⚡ (반등 가능성)"
+        
+        # MACD 상태 설명
+        macd_val = indicators['macd']
+        macd_hist = indicators['macd_histogram']
+        macd_status = ""
+        if macd_hist > 0:
+            macd_status = "상승 추세 (매수 우위)"
+        elif macd_hist < 0:
+            macd_status = "하락 추세 (매도 우위)"
+        else:
+            macd_status = "중립"
+        
+        # SMA 상태 설명
+        sma20 = indicators['sma_20']
+        sma50 = indicators['sma_50']
+        sma_status = ""
+        if sma20 > sma50:
+            sma_status = "골든크로스 (상승 추세)"
+        else:
+            sma_status = "데드크로스 (하락 추세)"
+        
+        # 볼린저 밴드 위치 설명
+        bb_lower = indicators['bb_lower']
+        bb_upper = indicators['bb_upper']
+        bb_position = (current_price - bb_lower) / (bb_upper - bb_lower) * 100 if (bb_upper != bb_lower) else 50
+        bb_status = ""
+        if bb_position <= 20:
+            bb_status = "하단 부근 (매수 신호)"
+        elif bb_position >= 80:
+            bb_status = "상단 부근 (매도 신호)"
+        else:
+            bb_status = "중앙 (안정적)"
+        
+        # 지표 요약 추가
+        report_text += (
+            f"\n<b>📈 주요 보조지표 ({candle_desc} 기준)</b>\n"
+            f"• <b>{rsi_desc}:</b> {rsi_val:.1f} → {rsi_status}\n"
+            f"• <b>MACD:</b> {macd_val:.4f} / Histogram: {macd_hist:.4f} → {macd_status}\n"
+            f"• <b>모멘텀(10):</b> {indicators['momentum']:.2f}%\n"
+            f"• <b>{bb_desc}:</b> {bb_lower:.2f} ~ {bb_upper:.2f} {currency}\n"
+            f"  현재 위치: 밴드 {bb_position:.0f}% → {bb_status}\n"
+            f"• <b>{sma_desc}:</b> {sma20:.2f} vs {sma50:.2f} → {sma_status}\n"
+            f"• <b>{sr_desc}:</b> {indicators['support']:.2f} / {indicators['resistance']:.2f} {currency}\n"
+            f"• <b>거래량 동향:</b> {indicators['volume_ratio']:.2f}x\n"
+        )
+        
+        return report_text
 
     def _handle_indices(self, chat_id, reply_to_message_id=None, message_thread_id=None):
         """
