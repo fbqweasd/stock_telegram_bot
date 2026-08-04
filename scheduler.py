@@ -5,6 +5,7 @@ import database
 import stock_api
 import indicators
 import market_indices
+import market_calendar
 
 class AlertScheduler:
     def __init__(self, bot_instance):
@@ -13,6 +14,7 @@ class AlertScheduler:
         self.scheduler_thread = None
         self.last_premarket_alert_date = None  # 장 시작 전 알림 날짜 추적
         self.last_extreme_check_date = None  # 극단 조건 체크 날짜 추적
+        self.last_us_market_open_alert_date = None  # 미국 본장 시작 전 알림 날짜 추적
 
     def start(self):
         """
@@ -42,6 +44,9 @@ class AlertScheduler:
                 # 장 시작 전 알림 체크 (한국 시간 기준 8:30~9:00)
                 self._check_premarket_alert()
                 
+                # 미국 본장 시작 전 알림 체크 (미국 동부 기준 9:00~9:30)
+                self._check_us_market_open_alert()
+                
                 # 극단적 시장 조건 체크 (하루 2~3번)
                 self._check_extreme_market_conditions()
                 
@@ -61,6 +66,7 @@ class AlertScheduler:
         """
         장 시작 전 (한국 시간 8:30~9:00) 시장 인덱스 알림을 전송합니다.
         하루에 한 번만 전송됩니다.
+        휴장일(주말/공휴일)에는 전송하지 않습니다.
         """
         kst_offset = 9 * 60 * 60
         now_kst = time.gmtime(time.time() + kst_offset)
@@ -74,6 +80,11 @@ class AlertScheduler:
         
         # 한국 시간 8:30~9:00 사이에만 전송
         if not (hour == 8 and minute >= 30) and not (hour == 9 and minute == 0):
+            return
+        
+        # 휴장일(주말/미국 공휴일)에는 알림을 보내지 않음
+        if not market_calendar.is_us_trading_day():
+            print("📅 오늘은 미국 시장 휴장일입니다. 장 시작 전 알림을 건너뜁니다.")
             return
         
         # 구독자가 없으면 스킵
@@ -107,6 +118,62 @@ class AlertScheduler:
         except Exception as e:
             print(f"Error sending pre-market alert: {e}")
 
+    def _check_us_market_open_alert(self):
+        """
+        미국 본장 시작 전 (미국 동부 기준 9:00~9:30) 시장 요약 알림을 전송합니다.
+        하루에 한 번만 전송됩니다.
+        휴장일(주말/공휴일)에는 전송하지 않습니다.
+        """
+        # 미국 동부 시간 기준
+        now_et = market_calendar.get_us_eastern_now()
+        today_str = now_et.strftime("%Y-%m-%d")
+        hour = now_et.hour
+        minute = now_et.minute
+        
+        # 이미 오늘 보냈으면 스킵
+        if self.last_us_market_open_alert_date == today_str:
+            return
+        
+        # 미국 동부 시간 9:00~9:30 사이에만 전송
+        if not (hour == 9 and 0 <= minute <= 30):
+            return
+        
+        # 휴장일(주말/미국 공휴일)에는 알림을 보내지 않음
+        if not market_calendar.is_us_trading_day(now_et):
+            print("📅 오늘은 미국 시장 휴장일입니다. 본장 시작 전 알림을 건너뜁니다.")
+            return
+        
+        # 구독자가 없으면 스킵
+        if not database.get_all_subscriptions():
+            return
+        
+        try:
+            print("🇺🇸 Sending US market open alert...")
+            
+            # 시장 인덱스 데이터 가져오기
+            data = market_indices.fetch_all_indices()
+            
+            # 리포트 생성
+            report_text = market_indices.format_us_market_open_report(data)
+            
+            # 모든 구독자에게 전송
+            all_subscriptions = database.get_all_subscriptions()
+            sent_to_chats = set()
+            
+            for chat_id, ticker in all_subscriptions:
+                if chat_id in sent_to_chats:
+                    continue
+                
+                topic_id = database.get_chat_topic(chat_id)
+                self.bot.send_message(chat_id, report_text, message_thread_id=topic_id)
+                sent_to_chats.add(chat_id)
+            
+            self.last_us_market_open_alert_date = today_str
+            print("✅ US market open alert sent successfully.")
+            
+        except Exception as e:
+            print(f"Error sending US market open alert: {e}")
+
     def _check_extreme_market_conditions(self):
         """
         극단적 시장 조건을 체크하고 알림을 전송합니다.
@@ -116,6 +183,7 @@ class AlertScheduler:
         - 환율 2% 이상 급변동
         
         하루에 최대 3번까지 전송 (과도한 알림 방지)
+        휴장일(주말/공휴일)에는 체크하지 않습니다.
         """
         kst_offset = 9 * 60 * 60
         now_kst = time.gmtime(time.time() + kst_offset)
@@ -128,6 +196,10 @@ class AlertScheduler:
         
         # 장 시간 중에만 체크 (한국 시간 9:00~16:00)
         if hour < 9 or hour >= 16:
+            return
+        
+        # 휴장일(주말/미국 공휴일)에는 알림을 보내지 않음
+        if not market_calendar.is_us_trading_day():
             return
         
         # 구독자가 없으면 스킵
@@ -302,6 +374,8 @@ class AlertScheduler:
             self._clear_event_for_all(subscribers, ticker, "RSI_OVERBOUGHT")
 
         # Process and dispatch each triggered event to users
+        stock_name = stock_data.get("name", ticker)
+        
         for event_key, event_info in events.items():
             sig_type = event_info["type"]
             for chat_id in subscribers:
@@ -312,7 +386,7 @@ class AlertScheduler:
                     # User hasn't been alerted about this current signal cycle yet
                     alert_text = (
                         f"<b>🔔 {event_info['title']}</b>\n"
-                        f"종목: <b>{ticker}</b>\n"
+                        f"종목: <b>{stock_name}</b> ({ticker})\n"
                         f"시간: <code>{time.strftime('%Y-%m-%d %H:%M:%S')}</code>\n\n"
                         f"{event_info['msg']}\n\n"
                         f"💡 실시간 차트 예측 리포트는 <code>/predict {ticker}</code> 를 입력하여 조회하세요!"
@@ -376,9 +450,10 @@ class AlertScheduler:
 
                 direction = "📈 상승" if pct_change > 0 else "📉 하락"
                 emoji = "🟢" if pct_change > 0 else "🔴"
+                stock_name = stock_data.get("name", ticker)
 
                 alert_text = (
-                    f"<b>{emoji} [{ticker}] 전일 종가 대비 변동 알림</b>\n"
+                    f"<b>{emoji} [{stock_name}] 전일 종가 대비 변동 알림</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━\n"
                     f"💵 현재가: <b>{current_price:.2f} {currency}</b>\n"
                     f"📌 전일 종가: {prev_close:.2f} {currency}\n"

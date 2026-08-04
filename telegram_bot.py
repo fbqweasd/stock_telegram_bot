@@ -256,7 +256,7 @@ class TelegramBot:
             "<i>장기 투자(수주~3개월)에 적합한 분석을 제공합니다.</i>\n"
             "<i>예시: /pw AAPL, /장기예측 TSLA</i>\n\n"
             "📌 <b>/indices</b> 또는 <b>/지수</b> 또는 <b>/시장</b> - 현재 시장 인덱스 현황을 조회합니다.\n"
-            "<i>공포탐욕지수, VIX, 주요 지수(S&P500, NASDAQ, DOW), 환율, 국채수익률을 한눈에 확인</i>\n\n"
+            "<i>공포탐욕지수, VIX, 주요 지수(S&P500, NASDAQ, NASDAQ 100, DOW), 환율, 국채수익률을 한눈에 확인</i>\n\n"
             "📌 <b>/help</b> 또는 <b>/도움말</b> - 이 도움말을 표시합니다.\n\n"
             "━━━━━━━━━━━━━━━━━━━\n"
             "🔔 <b>자동 알림 기능</b>\n\n"
@@ -303,10 +303,11 @@ class TelegramBot:
             
         # Add to database
         success = database.add_subscription(chat_id, ticker)
+        stock_name = stock_data.get("name", ticker)
         if success:
             self.send_message(
                 chat_id, 
-                f"✅ <code>{ticker}</code> ({stock_data['currency']})가 성공적으로 등록되었습니다!\n"
+                f"✅ <b>{html.escape(stock_name)}</b> (<code>{ticker}</code>)가 성공적으로 등록되었습니다!\n"
                 f"실시간 현재가: <b>{stock_data['current_price']:.2f} {stock_data['currency']}</b>\n"
                 f"주기적으로 주가를 검사하여 특이사항 발생 시 알림을 보내드릴게요.",
                 reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id
@@ -361,10 +362,16 @@ class TelegramBot:
                 currency = price_data['currency']
                 
                 # 전일 종가가 없으면 전체 데이터에서 가져오기 (fallback)
+                full_data = None
                 if prev_close is None or prev_close <= 0:
                     full_data = stock_api.fetch_stock_data(ticker)
                     if full_data:
                         prev_close = full_data.get("previous_close")
+                
+                if full_data is None:
+                    full_data = stock_api.fetch_stock_data(ticker)
+                
+                stock_name = full_data.get("name", ticker) if full_data else ticker
                 
                 # 전일 대비 등락률 계산
                 change_str = ""
@@ -380,7 +387,6 @@ class TelegramBot:
                 # 추천 등급 조회 (predictor 사용)
                 rec_str = ""
                 try:
-                    full_data = stock_api.fetch_stock_data(ticker)
                     if full_data:
                         analysis = predictor.predict_buy_sell_prices(full_data)
                         if "error" not in analysis:
@@ -399,7 +405,7 @@ class TelegramBot:
                 except Exception:
                     pass
                 
-                lines.append(f"{idx}. <b>{ticker}</b>: {price:.2f} {currency}{change_str}{rec_str}")
+                lines.append(f"{idx}. <b>{html.escape(stock_name)}</b> (<code>{ticker}</code>): {price:.2f} {currency}{change_str}{rec_str}")
             else:
                 # fallback: 전체 데이터 조회
                 data = stock_api.fetch_stock_data(ticker)
@@ -407,6 +413,7 @@ class TelegramBot:
                     price = data['current_price']
                     prev_close = data.get('previous_close')
                     currency = data['currency']
+                    stock_name = data.get("name", ticker)
                     
                     change_str = ""
                     if prev_close is not None and prev_close > 0:
@@ -438,9 +445,9 @@ class TelegramBot:
                     except Exception:
                         pass
                     
-                    lines.append(f"{idx}. <b>{ticker}</b>: {price:.2f} {currency}{change_str}{rec_str}")
+                    lines.append(f"{idx}. <b>{html.escape(stock_name)}</b> (<code>{ticker}</code>): {price:.2f} {currency}{change_str}{rec_str}")
                 else:
-                    lines.append(f"{idx}. <b>{ticker}</b>: 데이터 로드 실패 ⚠️")
+                    lines.append(f"{idx}. <code>{ticker}</code>: 데이터 로드 실패 ⚠️")
         
         # 결과 메시지 전송 후 "가져오는 중..." 메시지 삭제
         self.send_message(chat_id, "\n".join(lines), reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
@@ -489,6 +496,7 @@ class TelegramBot:
         currency = html.escape(str(analysis["currency"]))
         rec = analysis["recommendation"]
         ticker_safe = html.escape(str(analysis["ticker"]))
+        stock_name = html.escape(str(stock_data.get("name", analysis["ticker"])))
         
         # Color rating decoration
         emoji = "⚪"
@@ -534,7 +542,7 @@ class TelegramBot:
         sell_premium = ((sell_target - current_price) / current_price * 100) if current_price > 0 else 0
         
         report_text = (
-            f"<b>📊 [{ticker_safe}] 기술적 분석 & 예측 리포트</b>\n"
+            f"<b>📊 [{stock_name}] ({ticker_safe}) 기술적 분석 & 예측 리포트</b>\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"💵 현재가: <b>{current_price:.2f} {currency}</b>\n"
             f"📢 추천 등급: <b>{emoji} {html.escape(rec)}</b>\n"

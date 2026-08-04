@@ -340,6 +340,30 @@ def _get_weekly_data(ticker):
         return None
 
 
+def fetch_stock_name(ticker):
+    """
+    Yahoo Finance에서 종목명(회사명)을 가져옵니다.
+    chart API의 meta.longName 또는 meta.shortName에서 추출합니다.
+    실패 시 티커를 그대로 반환합니다.
+    """
+    ticker = ticker.strip().upper()
+    encoded_ticker = urllib.parse.quote(ticker)
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=1d&interval=1d"
+    
+    try:
+        data = _make_request(url)
+        if data:
+            result = data.get("chart", {}).get("result", [{}])[0]
+            meta = result.get("meta", {})
+            name = meta.get("longName") or meta.get("shortName")
+            if name:
+                return name
+    except Exception as e:
+        print(f"Error fetching stock name for {ticker}: {e}")
+    
+    return ticker
+
+
 def fetch_stock_data(ticker):
     """
     Fetches historical daily data + realtime price from Yahoo Finance API.
@@ -373,8 +397,12 @@ def fetch_stock_data(ticker):
     if previous_close is None:
         previous_close = realtime_prev_close
     
+    # 5. 종목명 가져오기
+    stock_name = fetch_stock_name(ticker)
+    
     return {
         "ticker": ticker,
+        "name": stock_name,
         "currency": currency,
         "current_price": current_price,
         "previous_close": previous_close,

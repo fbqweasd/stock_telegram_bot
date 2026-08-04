@@ -177,12 +177,14 @@ def fetch_market_indices():
     주요 시장 지수를 가져옵니다.
     - S&P 500 (^GSPC)
     - NASDAQ Composite (^IXIC)
+    - NASDAQ 100 (^NDX)
     - DOW Jones (^DJI)
-    반환: { sp500: {...}, nasdaq: {...}, dow: {...} }
+    반환: { sp500: {...}, nasdaq: {...}, nasdaq100: {...}, dow: {...} }
     """
     indices = {
         "sp500": {"symbol": "^GSPC", "name": "S&P 500"},
         "nasdaq": {"symbol": "^IXIC", "name": "NASDAQ"},
+        "nasdaq100": {"symbol": "^NDX", "name": "NASDAQ 100"},
         "dow": {"symbol": "^DJI", "name": "DOW"}
     }
     
@@ -540,7 +542,7 @@ def format_indices_report(data):
     indices = data.get("indices", {})
     if indices:
         lines.append(f"\n<b>📈 주요 지수</b>")
-        for key in ["sp500", "nasdaq", "dow"]:
+        for key in ["sp500", "nasdaq", "nasdaq100", "dow"]:
             idx = indices.get(key)
             if idx:
                 name = idx.get("name", key)
@@ -635,7 +637,7 @@ def format_pre_market_report(data):
     indices = data.get("indices", {})
     if indices:
         lines.append("\n<b>📈 주요 지수</b>")
-        for key in ["sp500", "nasdaq", "dow"]:
+        for key in ["sp500", "nasdaq", "nasdaq100", "dow"]:
             idx = indices.get(key)
             if idx:
                 name = idx.get("name", key)
@@ -678,6 +680,98 @@ def format_pre_market_report(data):
     
     lines.append("\n━━━━━━━━━━━━━━━━━━━")
     lines.append("<i>💡 오늘도 성공적인 투자 되세요!</i>")
+    
+    return "\n".join(lines)
+
+
+def format_us_market_open_report(data):
+    """
+    미국 본장 시작 전 (미국 동부 기준 9:00~9:30) 시장 요약 리포트 형식
+    """
+    lines = []
+    lines.append("<b>🇺🇸 미국 본장 시작 전 시장 요약</b>")
+    lines.append(f"⏱ 조회시간: <code>{data.get('timestamp', '')}</code>")
+    lines.append("━━━━━━━━━━━━━━━━━━━")
+    
+    # Fear & Greed Index
+    fg = data.get("fear_greed")
+    if fg and fg.get("value") is not None:
+        value = fg["value"]
+        classification = fg.get("classification", "")
+        
+        if value <= 25:
+            emoji = "🔴"
+        elif value <= 45:
+            emoji = "🟠"
+        elif value <= 55:
+            emoji = "🟡"
+        elif value <= 75:
+            emoji = "🟢"
+        else:
+            emoji = "🟢🔥"
+        
+        lines.append(f"\n<b>🎭 공포탐욕지수: {emoji} {value:.1f} ({classification})</b>")
+    
+    # VIX
+    vix = data.get("vix")
+    if vix:
+        value = vix["value"]
+        change_pct = vix.get("change_pct", 0)
+        
+        if value >= 25:
+            emoji = "⚠️"
+        else:
+            emoji = "✅"
+        
+        lines.append(f"<b>📊 VIX:</b> {value:.2f} ({change_pct:+.2f}%) {emoji}")
+    
+    # Market Indices
+    indices = data.get("indices", {})
+    if indices:
+        lines.append("\n<b>📈 주요 지수</b>")
+        for key in ["sp500", "nasdaq", "nasdaq100", "dow"]:
+            idx = indices.get(key)
+            if idx:
+                name = idx.get("name", key)
+                value = idx.get("value", 0)
+                change_pct = idx.get("change_pct", 0)
+                
+                emoji = "🟢" if change_pct > 0 else "🔴" if change_pct < 0 else "⚪"
+                sign = "+" if change_pct > 0 else ""
+                
+                lines.append(f"• {emoji} {name}: {value:,.2f} ({sign}{change_pct:.2f}%)")
+    
+    # USD/KRW
+    krw = data.get("usd_krw")
+    if krw:
+        value = krw["value"]
+        change_pct = krw.get("change_pct", 0)
+        lines.append(f"\n<b>💱 USD/KRW:</b> {value:,.0f}원 ({change_pct:+.2f}%)")
+    
+    # US Treasury 10Y
+    tnx = data.get("treasury_10y")
+    if tnx:
+        value = tnx["value"]
+        change = tnx.get("change", 0)
+        lines.append(f"<b>🏛️ 미국 10년물:</b> {value:.3f}% ({change:+.3f}%p)")
+    
+    # US Dollar Index (DXY)
+    dxy = data.get("us_dollar_index")
+    if dxy:
+        value = dxy["value"]
+        change_pct = dxy.get("change_pct", 0)
+        lines.append(f"<b>💵 달러 인덱스:</b> {value:.2f} ({change_pct:+.2f}%)")
+    
+    # 극단 조건 경고
+    extreme_alerts = check_extreme_conditions(data)
+    if extreme_alerts:
+        lines.append("\n━━━━━━━━━━━━━━━━━━━")
+        lines.append("<b>⚠️ 극단 조건 경고</b>")
+        for alert_type, message in extreme_alerts:
+            lines.append(f"• {message}")
+    
+    lines.append("\n━━━━━━━━━━━━━━━━━━━")
+    lines.append("<i>💡 본장 시작 전 프리마켓 동향을 확인하세요!</i>")
     
     return "\n".join(lines)
 
