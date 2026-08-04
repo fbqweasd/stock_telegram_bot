@@ -139,11 +139,12 @@ def _get_realtime_price(ticker):
 def _get_daily_data(ticker):
     """
     일봉 데이터를 가져옵니다 (기술적 지표 계산용 + 전일종가).
-    includePrePost=true로 요청하여 장 시작 전/후에도 당일 데이터가 포함되도록 합니다.
+    includePrePost=false로 요청하여 정확한 일봉 데이터를 얻습니다.
+    (includePrePost=true는 하루에 여러 캔들(프리/정규/애프터)이 생겨 전일 종가 계산이 왜곡될 수 있음)
     반환: { closes, highs, lows, opens, volumes, timestamps, currency, previous_close }
     """
     encoded_ticker = urllib.parse.quote(ticker)
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=60d&interval=1d&includePrePost=true"
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=60d&interval=1d&includePrePost=false"
     
     data = _make_request(url)
     if not data:
@@ -195,42 +196,45 @@ def _get_daily_data(ticker):
             return None
         
         # 전일 종가 계산
-        # includePrePost=true로 인해 하루에 여러 캔들(프리/정규/애프터)이 생길 수 있음
-        # meta.previousClose는 includePrePost와 함께 사용될 때 왜곡될 수 있으므로
-        # 타임스탬프 기반 계산을 우선 사용합니다.
+        # includePrePost=false로 요청했지만, 장중(특히 한국 주식)에는 오늘 캔들도 포함될 수 있음
+        # currentTradingPeriod.regular.start를 사용하여 마지막 캔들이 이번 거래일(오늘)의
+        # 캔들인지 판별합니다. 이는 미국/한국 시장의 프리/본/애프터장 상황에 관계없이 정확합니다.
         #
-        # 1순위: 타임스탬프 기반 계산
-        #   - 마지막 날짜(오늘) 이전 날짜(전일)의 마지막 캔들 종가
-        # 2순위: Yahoo Finance meta 값 (fallback)
-        #   - previousClose / regularMarketPreviousClose / chartPreviousClose
+        # 판별 로직:
+        #   - 마지막 캔들 타임스탬프 >= regular.start → 오늘 거래일 캔들 포함됨
+        #     → closes[-2]가 전일 종가
+        #   - 마지막 캔들 타임스탬프 < regular.start → 오늘 거래일 캔들 없음 (장 전/후)
+        #     → closes[-1]이 전일 종가
+        # meta.previousClose는 Yahoo Finance에서 부정확한 값을 반환할 수 있어 사용하지 않음
         cleaned["currency"] = currency
 
-        # 타임스탬프를 날짜(YYYY-MM-DD)로 변환
-        dates = []
-        for ts in cleaned["timestamps"]:
-            dt = time.gmtime(ts)
-            dates.append(time.strftime("%Y-%m-%d", dt))
+        # 현재 거래 기간 정보 (이번 거래일의 정규장 시작 시간)
+        trading_period = meta.get("currentTradingPeriod", {})
+        regular_period = trading_period.get("regular", {})
+        regular_start = regular_period.get("start")
 
-        # 마지막 날짜 찾기
-        last_date = dates[-1] if dates else None
-
-        # 전일 종가: 마지막 날짜 이전의 마지막 캔들 종가
         prev_close = None
-        if last_date:
-            for i in range(len(dates) - 1, -1, -1):
-                if dates[i] != last_date:
-                    prev_close = cleaned["closes"][i]
-                    break
+        if cleaned["timestamps"]:
+            last_ts = cleaned["timestamps"][-1]
+            
+            if regular_start is not None and last_ts >= regular_start:
+                # 마지막 캔들이 오늘 거래일 캔들 → 그 이전 캔들이 전일 종가
+                # (includePrePost=false이므로 하루에 하나씩만 존재)
+                if len(cleaned["closes"]) >= 2:
+                    prev_close = cleaned["closes"][-2]
+            else:
+                # 마지막 캔들이 이전 거래일 캔들 → 마지막 캔들 종가가 전일 종가
+                prev_close = cleaned["closes"][-1]
 
         if prev_close is None or prev_close <= 0:
-            # 타임스탬프 기반 계산 실패 시 meta 값 사용 (fallback)
+            # 전일 데이터가 없으면 마지막 종가 사용 (fallback)
+            prev_close = cleaned["closes"][-1]
+
+        if prev_close is None or prev_close <= 0:
+            # 마지막 캔들 종가가 없으면 meta 값 사용 (최종 fallback)
             prev_close = (meta.get("previousClose") or
                          meta.get("regularMarketPreviousClose") or
                          meta.get("chartPreviousClose"))
-
-        if prev_close is None or prev_close <= 0:
-            # 전일 데이터가 없으면 마지막 종가 사용 (최종 fallback)
-            prev_close = cleaned["closes"][-1]
 
         cleaned["previous_close"] = prev_close
         return cleaned
