@@ -52,7 +52,7 @@ def init_db():
         """)
         
         # Table to track daily price alerts (전일 종가 기준 5%/10%/20% 변동 알림)
-        # 하루에 1번만 알림을 보내기 위해 사용
+        # 동일한 (임계값, 방향) 조합은 하루에 1번만 알림을 보내기 위해 사용
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS daily_price_alerts (
                 chat_id INTEGER,
@@ -61,9 +61,34 @@ def init_db():
                 threshold_pct REAL,
                 direction TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (chat_id, ticker, alert_date)
+                PRIMARY KEY (chat_id, ticker, alert_date, threshold_pct, direction)
             )
         """)
+        
+        # 기존 스키마 마이그레이션: (chat_id, ticker, alert_date) PK를 가진 구버전 테이블이 있으면
+        # 새 PK 구조로 재생성합니다.
+        cursor.execute("PRAGMA table_info(daily_price_alerts)")
+        columns = cursor.fetchall()
+        pk_columns = [col[1] for col in columns if col[5] > 0]
+        if pk_columns and pk_columns != ["chat_id", "ticker", "alert_date", "threshold_pct", "direction"]:
+            # 구버전 테이블 백업 후 재생성
+            cursor.execute("ALTER TABLE daily_price_alerts RENAME TO daily_price_alerts_old")
+            cursor.execute("""
+                CREATE TABLE daily_price_alerts (
+                    chat_id INTEGER,
+                    ticker TEXT,
+                    alert_date TEXT,
+                    threshold_pct REAL,
+                    direction TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (chat_id, ticker, alert_date, threshold_pct, direction)
+                )
+            """)
+            cursor.execute("""
+                INSERT OR IGNORE INTO daily_price_alerts (chat_id, ticker, alert_date, threshold_pct, direction, created_at)
+                SELECT chat_id, ticker, alert_date, threshold_pct, direction, created_at FROM daily_price_alerts_old
+            """)
+            cursor.execute("DROP TABLE daily_price_alerts_old")
         
         # Table to store chat notification topic settings (단체방 알림 토픽 설정)
         cursor.execute("""

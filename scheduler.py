@@ -400,9 +400,9 @@ class AlertScheduler:
 
     def _check_price_change_alerts(self, ticker, current_price, currency, subscribers):
         """
-        전일 종가 대비 5%, 10%, 20% 변동 시 하루에 1번만 알림을 전송합니다.
-        더 큰 변동이 먼저 발생하면 작은 변동은 알리지 않습니다.
-        예: 본장 시작 직후 -10% 발생 → -5% 알림은 스킵
+        전일 종가 대비 5%, 10%, 20% 변동 시 알림을 전송합니다.
+        하루에 동일한 (임계값, 방향) 조합은 1번만 알림을 전송합니다.
+        예: 5% 상승 알림을 보냈어도, 이후 10% 상승 또는 5% 하락 시에는 새로 알림을 보냅니다.
         """
         # 전일 종가 가져오기
         stock_data = stock_api.fetch_stock_data(ticker)
@@ -423,32 +423,34 @@ class AlertScheduler:
         # 알림 임계값 리스트 (큰 순서대로)
         thresholds = [20, 10, 5]
 
+        # 현재 변동 방향
+        direction = "up" if pct_change > 0 else "down"
+
+        # 현재 변동률이 넘는 가장 큰 임계값 찾기
+        triggered_threshold = None
+        for t in thresholds:
+            if abs_pct >= t:
+                triggered_threshold = t
+                break
+
+        if triggered_threshold is None:
+            return
+
         for chat_id in subscribers:
             try:
                 # 오늘 이미 보낸 알림 확인
                 sent_alerts = database.get_daily_alerts_for_date(chat_id, ticker, today_str)
 
-                # 이미 보낸 최대 임계값 확인
-                max_sent = 0
+                # 이미 보낸 (임계값, 방향) 조합 확인
+                sent_keys = set()
                 for alert in sent_alerts:
-                    if alert["threshold_pct"] > max_sent:
-                        max_sent = alert["threshold_pct"]
+                    sent_keys.add((alert["threshold_pct"], alert["direction"]))
 
-                # 이미 더 큰 변동 알림을 보냈으면 스킵
-                if max_sent > 0:
+                # 같은 (임계값, 방향) 조합을 이미 오늘 보냈으면 스킵
+                if (triggered_threshold, direction) in sent_keys:
                     continue
 
-                # 현재 변동률이 넘는 가장 큰 임계값 찾기
-                triggered_threshold = None
-                for t in thresholds:
-                    if abs_pct >= t:
-                        triggered_threshold = t
-                        break
-
-                if triggered_threshold is None:
-                    continue
-
-                direction = "📈 상승" if pct_change > 0 else "📉 하락"
+                direction_label = "📈 상승" if pct_change > 0 else "📉 하락"
                 emoji = "🟢" if pct_change > 0 else "🔴"
                 stock_name = stock_data.get("name", ticker)
 
@@ -457,15 +459,14 @@ class AlertScheduler:
                     f"━━━━━━━━━━━━━━━━━━━\n"
                     f"💵 현재가: <b>{current_price:.2f} {currency}</b>\n"
                     f"📌 전일 종가: {prev_close:.2f} {currency}\n"
-                    f"📊 변동: {direction} <b>{abs_pct:.2f}%</b> (기준: {triggered_threshold}%)\n"
+                    f"📊 변동: {direction_label} <b>{abs_pct:.2f}%</b> (기준: {triggered_threshold}%)\n"
                     f"━━━━━━━━━━━━━━━━━━━\n"
                     f"💡 상세 분석 리포트는 <code>/predict {ticker}</code> 를 입력하세요!"
                 )
 
                 topic_id = database.get_chat_topic(chat_id)
                 self.bot.send_message(chat_id, alert_text, message_thread_id=topic_id)
-                database.record_daily_alert(chat_id, ticker, today_str, triggered_threshold,
-                                           "up" if pct_change > 0 else "down")
+                database.record_daily_alert(chat_id, ticker, today_str, triggered_threshold, direction)
 
                 # Update last price and last alert price
                 database.set_last_price(chat_id, ticker, current_price)
