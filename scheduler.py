@@ -285,7 +285,7 @@ class AlertScheduler:
             return
 
         # --- 1. Price Change % Alerts (works even with minimal data) ---
-        self._check_price_change_alerts(ticker, current_price, currency, subscribers)
+        self._check_price_change_alerts(ticker, current_price, currency, subscribers, stock_data)
 
         # Basic validation for technical indicators
         if len(closes) < 21:
@@ -398,16 +398,13 @@ class AlertScheduler:
                     # Register that we notified the user
                     database.set_last_signal(chat_id, ticker, sig_type, price_now)
 
-    def _check_price_change_alerts(self, ticker, current_price, currency, subscribers):
+    def _check_price_change_alerts(self, ticker, current_price, currency, subscribers, stock_data):
         """
         전일 종가 대비 5%, 10%, 20% 변동 시 알림을 전송합니다.
         하루에 동일한 (임계값, 방향) 조합은 1번만 알림을 전송합니다.
         예: 5% 상승 알림을 보냈어도, 이후 10% 상승 또는 5% 하락 시에는 새로 알림을 보냅니다.
         """
-        # 전일 종가 가져오기
-        stock_data = stock_api.fetch_stock_data(ticker)
-        if not stock_data:
-            return
+        # 전일 종가 (이미 가져온 stock_data에서 사용 - 중복 API 호출 방지)
         prev_close = stock_data.get("previous_close")
         if prev_close is None or prev_close <= 0:
             return

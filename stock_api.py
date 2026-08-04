@@ -76,9 +76,11 @@ def _get_realtime_price(ticker):
             market_state = meta.get("marketState", "UNKNOWN")
 
             # 전일 종가 (Yahoo chart meta)
-            previous_close = (meta.get("chartPreviousClose") or
-                            meta.get("previousClose") or
-                            meta.get("regularMarketPreviousClose"))
+            # chartPreviousClose는 range 시작 이전 종가이므로 부적합할 수 있음
+            # previousClose / regularMarketPreviousClose가 실제 전일 종가
+            previous_close = (meta.get("previousClose") or
+                            meta.get("regularMarketPreviousClose") or
+                            meta.get("chartPreviousClose"))
 
             # 핵심 수정: 1분봉 캔들 중 마지막 유효 close를 우선 사용
             # includePrePost=true 덕분에 PRE/POST 시간대의 실제 거래가도 포함됨
@@ -114,9 +116,9 @@ def _get_realtime_price(ticker):
                 if market_state is None:
                     market_state = meta.get("marketState", "UNKNOWN")
                 if previous_close is None:
-                    previous_close = (meta.get("chartPreviousClose") or
-                                    meta.get("previousClose") or
-                                    meta.get("regularMarketPreviousClose"))
+                    previous_close = (meta.get("previousClose") or
+                                    meta.get("regularMarketPreviousClose") or
+                                    meta.get("chartPreviousClose"))
 
                 # 5분봉 캔들 중 마지막 유효 close 우선 사용
                 closes_5m = result.get("indicators", {}).get("quote", [{}])[0].get("close", [])
@@ -192,14 +194,45 @@ def _get_daily_data(ticker):
         if len(cleaned["closes"]) < 20:
             return None
         
-        # 전일 종가: meta.chartPreviousClose는 range=60d 기준 첫 데이터 이전(약 60거래일 전) 종가이므로
-        # 실제 전일 종가는 마지막에서 두 번째 값(closes[-2])을 사용
-        # closes[-1]은 오늘 종가(장중이면 현재가와 유사)이므로 부적합
+        # 전일 종가 계산
+        # includePrePost=true로 인해 하루에 여러 캔들(프리/정규/애프터)이 생길 수 있음
+        # meta.previousClose는 includePrePost와 함께 사용될 때 왜곡될 수 있으므로
+        # 타임스탬프 기반 계산을 우선 사용합니다.
+        #
+        # 1순위: 타임스탬프 기반 계산
+        #   - 마지막 날짜(오늘) 이전 날짜(전일)의 마지막 캔들 종가
+        # 2순위: Yahoo Finance meta 값 (fallback)
+        #   - previousClose / regularMarketPreviousClose / chartPreviousClose
         cleaned["currency"] = currency
-        if len(cleaned["closes"]) >= 2:
-            cleaned["previous_close"] = cleaned["closes"][-2]
-        else:
-            cleaned["previous_close"] = cleaned["closes"][-1]
+
+        # 타임스탬프를 날짜(YYYY-MM-DD)로 변환
+        dates = []
+        for ts in cleaned["timestamps"]:
+            dt = time.gmtime(ts)
+            dates.append(time.strftime("%Y-%m-%d", dt))
+
+        # 마지막 날짜 찾기
+        last_date = dates[-1] if dates else None
+
+        # 전일 종가: 마지막 날짜 이전의 마지막 캔들 종가
+        prev_close = None
+        if last_date:
+            for i in range(len(dates) - 1, -1, -1):
+                if dates[i] != last_date:
+                    prev_close = cleaned["closes"][i]
+                    break
+
+        if prev_close is None or prev_close <= 0:
+            # 타임스탬프 기반 계산 실패 시 meta 값 사용 (fallback)
+            prev_close = (meta.get("previousClose") or
+                         meta.get("regularMarketPreviousClose") or
+                         meta.get("chartPreviousClose"))
+
+        if prev_close is None or prev_close <= 0:
+            # 전일 데이터가 없으면 마지막 종가 사용 (최종 fallback)
+            prev_close = cleaned["closes"][-1]
+
+        cleaned["previous_close"] = prev_close
         return cleaned
         
     except (IndexError, AttributeError, TypeError):
