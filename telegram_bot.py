@@ -196,7 +196,10 @@ class TelegramBot:
             "/indices": "/indices",
             "/지수": "/indices",
             "/시장": "/indices",
-            "/i": "/indices"
+            "/i": "/indices",
+            "/alerts": "/alerts",
+            "/알림": "/alerts",
+            "/alert": "/alerts"
         }
         
         # 명령어 정규화
@@ -222,6 +225,8 @@ class TelegramBot:
             self._handle_settopic(chat_id, arg, reply_to_message_id, message_thread_id)
         elif normalized_cmd == "/indices":
             self._handle_indices(chat_id, reply_to_message_id, message_thread_id)
+        elif normalized_cmd == "/alerts":
+            self._handle_alerts(chat_id, arg, reply_to_message_id, message_thread_id)
         else:
             self.send_message(chat_id, "⚠️ 알 수 없는 명령어입니다. 사용 가능한 명령어를 보려면 /help 를 입력하세요.",
                             reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
@@ -904,6 +909,54 @@ class TelegramBot:
         )
         
         return report_text
+
+    def _handle_alerts(self, chat_id, arg, reply_to_message_id=None, message_thread_id=None):
+        """
+        자동 알림 켜기/끄기 명령어.
+        사용법: /alerts on|off
+        """
+        arg_lower = (arg or "").strip().lower()
+        if arg_lower in ("", "status", "상태", "현재"):
+            enabled = database.get_chat_alerts_enabled(chat_id)
+            state_text = "켜짐 ✅" if enabled else "꺼짐 🔕"
+            self.send_message(
+                chat_id,
+                f"🔔 현재 자동 알림 상태: <b>{state_text}</b>\n"
+                "사용법: <code>/alerts on</code> 또는 <code>/alerts off</code>",
+                reply_to_message_id=reply_to_message_id,
+                message_thread_id=message_thread_id
+            )
+            return
+
+        if arg_lower in ("off", "끄기", "disable", "false", "0"):
+            database.set_chat_alerts_enabled(chat_id, False)
+            self.send_message(
+                chat_id,
+                "🔕 자동 알림이 꺼졌습니다.\n"
+                "다시 켜려면 <code>/alerts on</code>을 입력하세요.",
+                reply_to_message_id=reply_to_message_id,
+                message_thread_id=message_thread_id
+            )
+            return
+
+        if arg_lower in ("on", "켜기", "enable", "true", "1"):
+            database.set_chat_alerts_enabled(chat_id, True)
+            self.send_message(
+                chat_id,
+                "🔔 자동 알림이 켜졌습니다.\n"
+                "이제 변동폭/과열/시장 알림을 받게 됩니다.",
+                reply_to_message_id=reply_to_message_id,
+                message_thread_id=message_thread_id
+            )
+            return
+
+        self.send_message(
+            chat_id,
+            "⚠️ 올바른 형식이 아닙니다.\n"
+            "사용법: <code>/alerts on</code> 또는 <code>/alerts off</code>",
+            reply_to_message_id=reply_to_message_id,
+            message_thread_id=message_thread_id
+        )
 
     def _handle_indices(self, chat_id, reply_to_message_id=None, message_thread_id=None):
         """

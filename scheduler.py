@@ -234,6 +234,8 @@ class AlertScheduler:
             for chat_id, ticker in all_subscriptions:
                 if chat_id in sent_to_chats:
                     continue
+                if not database.get_chat_alerts_enabled(chat_id):
+                    continue
                 
                 topic_id = database.get_chat_topic(chat_id)
                 self.bot.send_message(chat_id, alert_text, message_thread_id=topic_id)
@@ -379,6 +381,9 @@ class AlertScheduler:
         for event_key, event_info in events.items():
             sig_type = event_info["type"]
             for chat_id in subscribers:
+                if not database.get_chat_alerts_enabled(chat_id):
+                    continue
+
                 # Check database to see if we already notified this user about this specific signal
                 last_sig = database.get_last_signal(chat_id, ticker, sig_type)
                 
@@ -434,6 +439,9 @@ class AlertScheduler:
             return
 
         for chat_id in subscribers:
+            if not database.get_chat_alerts_enabled(chat_id):
+                continue
+
             try:
                 # 오늘 이미 보낸 알림 확인
                 sent_alerts = database.get_daily_alerts_for_date(chat_id, ticker, today_str)

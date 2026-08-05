@@ -98,6 +98,15 @@ def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Table to store whether automatic alerts are enabled for a chat
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS chat_alert_settings (
+                chat_id INTEGER PRIMARY KEY,
+                alerts_enabled INTEGER NOT NULL DEFAULT 1,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         conn.commit()
 
 def add_subscription(chat_id, ticker):
@@ -422,3 +431,32 @@ def get_chat_topic(chat_id):
         if row:
             return row[0]
         return None
+
+
+def set_chat_alerts_enabled(chat_id, enabled):
+    """
+    Enables or disables automatic alerts for a chat.
+    Returns True when the setting is stored successfully.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO chat_alert_settings (chat_id, alerts_enabled, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+        """, (chat_id, 1 if enabled else 0))
+        conn.commit()
+        return True
+
+
+def get_chat_alerts_enabled(chat_id):
+    """
+    Returns whether automatic alerts are enabled for a chat.
+    Defaults to True if no setting exists.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT alerts_enabled FROM chat_alert_settings WHERE chat_id = ?", (chat_id,))
+        row = cursor.fetchone()
+        if row is None:
+            return True
+        return bool(row[0])
