@@ -12,9 +12,8 @@ class AlertScheduler:
         self.bot = bot_instance
         self.is_running = False
         self.scheduler_thread = None
-        self.last_premarket_alert_date = None  # 장 시작 전 알림 날짜 추적
         self.last_extreme_check_date = None  # 극단 조건 체크 날짜 추적
-        self.last_us_market_open_alert_date = None  # 미국 본장 시작 전 알림 날짜 추적
+        self.last_us_market_close_alert_date = None  # 미국장 마감 요약 알림 날짜 추적
 
     def start(self):
         """
@@ -41,11 +40,8 @@ class AlertScheduler:
         
         while self.is_running:
             try:
-                # 장 시작 전 알림 체크 (한국 시간 기준 8:30~9:00)
-                self._check_premarket_alert()
-                
-                # 미국 본장 시작 전 알림 체크 (미국 동부 기준 9:00~9:30)
-                self._check_us_market_open_alert()
+                # 미국장 마감 요약 알림 체크 (미국 동부 기준 16:00~17:59)
+                self._check_us_market_close_alert()
                 
                 # 극단적 시장 조건 체크 (하루 2~3번)
                 self._check_extreme_market_conditions()
@@ -62,65 +58,9 @@ class AlertScheduler:
                     break
                 time.sleep(1)
 
-    def _check_premarket_alert(self):
+    def _check_us_market_close_alert(self):
         """
-        장 시작 전 (한국 시간 8:30~9:00) 시장 인덱스 알림을 전송합니다.
-        하루에 한 번만 전송됩니다.
-        휴장일(주말/공휴일)에는 전송하지 않습니다.
-        """
-        kst_offset = 9 * 60 * 60
-        now_kst = time.gmtime(time.time() + kst_offset)
-        today_str = time.strftime("%Y-%m-%d", now_kst)
-        hour = now_kst.tm_hour
-        minute = now_kst.tm_min
-        
-        # 이미 오늘 보냈으면 스킵
-        if self.last_premarket_alert_date == today_str:
-            return
-        
-        # 한국 시간 8:30~9:00 사이에만 전송
-        if not (hour == 8 and minute >= 30) and not (hour == 9 and minute == 0):
-            return
-        
-        # 휴장일(주말/미국 공휴일)에는 알림을 보내지 않음
-        if not market_calendar.is_us_trading_day():
-            print("📅 오늘은 미국 시장 휴장일입니다. 장 시작 전 알림을 건너뜁니다.")
-            return
-        
-        # 구독자가 없으면 스킵
-        if not database.get_all_subscriptions():
-            return
-        
-        try:
-            print("🌅 Sending pre-market alert...")
-            
-            # 시장 인덱스 데이터 가져오기
-            data = market_indices.fetch_all_indices()
-            
-            # 리포트 생성
-            report_text = market_indices.format_pre_market_report(data)
-            
-            # 모든 구독자에게 전송
-            all_subscriptions = database.get_all_subscriptions()
-            sent_to_chats = set()
-            
-            for chat_id, ticker in all_subscriptions:
-                if chat_id in sent_to_chats:
-                    continue
-                
-                topic_id = database.get_chat_topic(chat_id)
-                self.bot.send_message(chat_id, report_text, message_thread_id=topic_id)
-                sent_to_chats.add(chat_id)
-            
-            self.last_premarket_alert_date = today_str
-            print("✅ Pre-market alert sent successfully.")
-            
-        except Exception as e:
-            print(f"Error sending pre-market alert: {e}")
-
-    def _check_us_market_open_alert(self):
-        """
-        미국 본장 시작 전 (미국 동부 기준 9:00~9:30) 시장 요약 알림을 전송합니다.
+        미국장 마감 후 (미국 동부 기준 16:00~17:59) 시장 요약 알림을 전송합니다.
         하루에 한 번만 전송됩니다.
         휴장일(주말/공휴일)에는 전송하지 않습니다.
         """
@@ -128,19 +68,18 @@ class AlertScheduler:
         now_et = market_calendar.get_us_eastern_now()
         today_str = now_et.strftime("%Y-%m-%d")
         hour = now_et.hour
-        minute = now_et.minute
         
         # 이미 오늘 보냈으면 스킵
-        if self.last_us_market_open_alert_date == today_str:
+        if self.last_us_market_close_alert_date == today_str:
             return
         
-        # 미국 동부 시간 9:00~9:30 사이에만 전송
-        if not (hour == 9 and 0 <= minute <= 30):
+        # 미국 동부 시간 16:00~17:59 사이에만 전송 (정규장 마감 이후 요약)
+        if not (16 <= hour <= 17):
             return
         
         # 휴장일(주말/미국 공휴일)에는 알림을 보내지 않음
         if not market_calendar.is_us_trading_day(now_et):
-            print("📅 오늘은 미국 시장 휴장일입니다. 본장 시작 전 알림을 건너뜁니다.")
+            print("📅 오늘은 미국 시장 휴장일입니다. 마감 요약 알림을 건너뜁니다.")
             return
         
         # 구독자가 없으면 스킵
@@ -148,13 +87,13 @@ class AlertScheduler:
             return
         
         try:
-            print("🇺🇸 Sending US market open alert...")
+            print("🇺🇸 Sending US market close summary...")
             
             # 시장 인덱스 데이터 가져오기
             data = market_indices.fetch_all_indices()
             
             # 리포트 생성
-            report_text = market_indices.format_us_market_open_report(data)
+            report_text = market_indices.format_us_market_close_report(data)
             
             # 모든 구독자에게 전송
             all_subscriptions = database.get_all_subscriptions()
@@ -168,11 +107,11 @@ class AlertScheduler:
                 self.bot.send_message(chat_id, report_text, message_thread_id=topic_id)
                 sent_to_chats.add(chat_id)
             
-            self.last_us_market_open_alert_date = today_str
-            print("✅ US market open alert sent successfully.")
+            self.last_us_market_close_alert_date = today_str
+            print("✅ US market close summary sent successfully.")
             
         except Exception as e:
-            print(f"Error sending US market open alert: {e}")
+            print(f"Error sending US market close summary: {e}")
 
     def _check_extreme_market_conditions(self):
         """
