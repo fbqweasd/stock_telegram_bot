@@ -392,6 +392,102 @@ def fetch_all_indices():
     return result
 
 
+def fetch_korea_market_indices():
+    """
+    한국 주요 시장 지수를 가져옵니다.
+    - KOSPI (^KS11)
+    - KOSDAQ (^KQ11)
+    반환: { kospi: {...}, kosdaq: {...} }
+    각 항목: { name, value, change, change_pct, previous_close }
+    """
+    indices = {
+        "kospi": {"symbol": "^KS11", "name": "KOSPI"},
+        "kosdaq": {"symbol": "^KQ11", "name": "KOSDAQ"}
+    }
+
+    result = {}
+
+    for key, info in indices.items():
+        encoded_symbol = urllib.parse.quote(info["symbol"])
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_symbol}?range=10d&interval=1d&includePrePost=true"
+
+        try:
+            response = _make_request(url)
+            if response:
+                data = json.loads(response)
+                chart_result = data.get("chart", {}).get("result", [{}])[0]
+                meta = chart_result.get("meta", {})
+
+                current_price = meta.get("regularMarketPrice")
+
+                # 전일 종가: daily OHLC 데이터에서 직접 추출
+                previous_close = _extract_previous_close_from_daily(chart_result)
+                if previous_close is None:
+                    previous_close = meta.get("chartPreviousClose") or meta.get("previousClose")
+
+                if current_price and previous_close:
+                    change = current_price - previous_close
+                    change_pct = (change / previous_close) * 100
+
+                    result[key] = {
+                        "name": info["name"],
+                        "value": round(current_price, 2),
+                        "change": round(change, 2),
+                        "change_pct": round(change_pct, 2),
+                        "previous_close": round(previous_close, 2)
+                    }
+        except Exception as e:
+            print(f"Error fetching {info['name']}: {e}")
+
+        time.sleep(0.5)  # API rate limit 준수
+
+    return result
+
+
+def fetch_korea_market_close_data():
+    """
+    한국장 마감 요약에 필요한 데이터를 한 번에 가져옵니다.
+    - KOSPI, KOSDAQ (국내 지수)
+    - USD/KRW 환율
+    - (참고) 공포탐욕지수, VIX, 미국 주요 지수
+    반환: {
+        korea_indices: { kospi: {...}, kosdaq: {...} },
+        usd_krw: {...},
+        fear_greed: {...},
+        vix: {...},
+        us_indices: { sp500: {...}, nasdaq: {...}, dow: {...} },
+        date: "...",
+        timestamp: "..."
+    }
+    """
+    result = {
+        "korea_indices": {},
+        "usd_krw": None,
+        "fear_greed": None,
+        "vix": None,
+        "us_indices": {},
+        "date": time.strftime("%Y-%m-%d", time.gmtime(time.time() + 9 * 60 * 60)),
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() + 9 * 60 * 60))
+    }
+
+    # 국내 지수 (KOSPI, KOSDAQ)
+    result["korea_indices"] = fetch_korea_market_indices()
+    time.sleep(0.5)
+
+    # USD/KRW 환율
+    result["usd_krw"] = fetch_usd_krw()
+    time.sleep(0.5)
+
+    # 참고 정보
+    result["fear_greed"] = fetch_fear_greed_index()
+    time.sleep(0.5)
+    result["vix"] = fetch_vix()
+    time.sleep(0.5)
+    result["us_indices"] = fetch_market_indices()
+
+    return result
+
+
 def check_extreme_conditions(data):
     """
     극단적 시장 조건을 감지합니다.
@@ -684,16 +780,92 @@ def format_us_market_close_report(data):
     return "\n".join(lines)
 
 
+def format_korea_market_close_report(data):
+    """
+    한국장 마감 후 (한국 시간 15:30 이후) 시장 요약 리포트 형식
+    - KOSPI, KOSDAQ (국내 지수)
+    - USD/KRW 환율
+    - (참고) 공포탐욕지수, VIX, 미국 주요 지수
+    """
+    lines = []
+    lines.append("<b>🇰🇷 한국장 마감 요약</b>")
+    lines.append(f"📅 <code>{data.get('date', '')}</code> · ⏱ <code>{data.get('timestamp', '')}</code>")
+    lines.append("━━━━━━━━━━━━━━━━━━━")
+
+    # 국내 주요 지수 (KOSPI, KOSDAQ)
+    korea_indices = data.get("korea_indices", {})
+    if korea_indices:
+        lines.append("\n<b>📈 국내 주요 지수</b>")
+        for key in ["kospi", "kosdaq"]:
+            idx = korea_indices.get(key)
+            if idx:
+                name = idx.get("name", key)
+                value = idx.get("value", 0)
+                change = idx.get("change", 0)
+                change_pct = idx.get("change_pct", 0)
+
+                emoji = "🟢" if change_pct > 0 else "🔴" if change_pct < 0 else "⚪"
+                sign = "+" if change_pct > 0 else ""
+
+                lines.append(f"• {emoji} <b>{name}</b>: {value:,.2f} ({sign}{change_pct:.2f}% · {sign}{change:,.2f})")
+
+    # USD/KRW 환율
+    krw = data.get("usd_krw")
+    if krw:
+        value = krw["value"]
+        change = krw.get("change", 0)
+        change_pct = krw.get("change_pct", 0)
+
+        emoji = "📈" if change_pct > 0 else "📉" if change_pct < 0 else "➡️"
+
+        lines.append("\n<b>💱 USD/KRW 환율</b>")
+        lines.append(f"{emoji} <b>{value:,.0f}원</b> ({change_pct:+.2f}% · {change:+,.0f}원)")
+
+    # 참고 정보
+    lines.append("\n━━━━━━━━━━━━━━━━━━━")
+    lines.append("<b>🌐 참고 정보</b>")
+
+    fg = data.get("fear_greed")
+    if fg and fg.get("value") is not None:
+        value = fg["value"]
+        classification = fg.get("classification", "")
+        lines.append(f"• 🎭 공포탐욕지수: <b>{value:.1f}</b> ({classification})")
+
+    vix = data.get("vix")
+    if vix:
+        value = vix["value"]
+        change_pct = vix.get("change_pct", 0)
+        lines.append(f"• 📊 VIX: {value:.2f} ({change_pct:+.2f}%)")
+
+    us_indices = data.get("us_indices", {})
+    if us_indices:
+        for key in ["sp500", "nasdaq", "dow"]:
+            idx = us_indices.get(key)
+            if idx:
+                name = idx.get("name", key)
+                value = idx.get("value", 0)
+                change_pct = idx.get("change_pct", 0)
+
+                emoji = "🟢" if change_pct > 0 else "🔴" if change_pct < 0 else "⚪"
+                sign = "+" if change_pct > 0 else ""
+
+                lines.append(f"• {emoji} {name}: {value:,.2f} ({sign}{change_pct:.2f}%)")
+
+    lines.append("\n━━━━━━━━━━━━━━━━━━━")
+    lines.append("<i>💡 /indices 명령어로 상세 시장 현황을 확인하세요.</i>")
+
+    return "\n".join(lines)
+
+
 if __name__ == "__main__":
     # 테스트
-    print("Fetching all market indices...")
-    data = fetch_all_indices()
-    
-    print("\n" + "="*50)
-    print(format_indices_report(data))
-    
-    print("\n" + "="*50)
-    print("\n극단 조건 체크:")
-    alerts = check_extreme_conditions(data)
-    for alert_type, message in alerts:
-        print(f"  - {message}")
+    print("국내 시장 (KOSPI/KOSDAQ) 데이터 가져오는 중...")
+    data = fetch_korea_market_close_data()
+
+    print("\n" + "=" * 50)
+    print(format_korea_market_close_report(data))
+
+    print("\n" + "=" * 50)
+    print("\n전체 시장 인덱스 가져오는 중...")
+    all_data = fetch_all_indices()
+    print(format_indices_report(all_data))

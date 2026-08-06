@@ -140,7 +140,129 @@ def is_us_trading_day(now_et=None):
     return True
 
 
+
+# ============================================================
+# 한국 시장 (KRX) 관련 함수
+# ============================================================
+
+def get_korea_now():
+    """
+    현재 한국 표준시(KST, UTC+9) 기준 naive datetime을 반환합니다.
+    """
+    return datetime.utcnow() + timedelta(hours=9)
+
+
+# 한국 음력 공휴일 (설날/추석 연휴와 부처님오신날) - 해당 연도의 양력 날짜
+# key: 연도, value: 양력 공휴일(휴장일) 날짜 목록
+# 설날(음력 1/1)과 추석(음력 8/15)은 전날~다음날 3일 연휴를 포함하여 명시합니다.
+KOREA_LUNAR_HOLIDAYS = {
+    2023: [
+        datetime(2023, 1, 21), datetime(2023, 1, 22), datetime(2023, 1, 23),  # 설날
+        datetime(2023, 5, 27),                                                  # 부처님오신날
+        datetime(2023, 9, 28), datetime(2023, 9, 29), datetime(2023, 9, 30),  # 추석
+    ],
+    2024: [
+        datetime(2024, 2, 9), datetime(2024, 2, 10), datetime(2024, 2, 11),  # 설날
+        datetime(2024, 5, 15),                                                 # 부처님오신날
+        datetime(2024, 9, 16), datetime(2024, 9, 17), datetime(2024, 9, 18),  # 추석
+    ],
+    2025: [
+        datetime(2025, 1, 28), datetime(2025, 1, 29), datetime(2025, 1, 30),  # 설날
+        datetime(2025, 5, 5),                                                   # 부처님오신날
+        datetime(2025, 10, 5), datetime(2025, 10, 6), datetime(2025, 10, 7),  # 추석
+    ],
+    2026: [
+        datetime(2026, 2, 16), datetime(2026, 2, 17), datetime(2026, 2, 18),  # 설날
+        datetime(2026, 5, 24),                                                  # 부처님오신날
+        datetime(2026, 9, 24), datetime(2026, 9, 25), datetime(2026, 9, 26),  # 추석
+    ],
+    2027: [
+        datetime(2027, 2, 6), datetime(2027, 2, 7), datetime(2027, 2, 8),    # 설날
+        datetime(2027, 5, 13),                                                  # 부처님오신날
+        datetime(2027, 9, 14), datetime(2027, 9, 15), datetime(2027, 9, 16),  # 추석
+    ],
+    2028: [
+        datetime(2028, 1, 25), datetime(2028, 1, 26), datetime(2028, 1, 27),  # 설날
+        datetime(2028, 5, 1),                                                   # 부처님오신날
+        datetime(2028, 10, 2), datetime(2028, 10, 3), datetime(2028, 10, 4),  # 추석
+    ],
+    2029: [
+        datetime(2029, 2, 12), datetime(2029, 2, 13), datetime(2029, 2, 14),  # 설날
+        datetime(2029, 5, 21),                                                  # 부처님오신날
+        datetime(2029, 9, 21), datetime(2029, 9, 22), datetime(2029, 9, 23),  # 추석
+    ],
+}
+
+
+def _korea_observed_date(month, day, year):
+    """
+    한국 대체공휴일(휴장일): 공휴일이 주말(토/일)이면 다음 평일이 대체 휴장일이 됩니다.
+    """
+    holiday = datetime(year, month, day)
+    if holiday.weekday() < 5:  # 평일이면 그대로
+        return holiday
+    # 주말이면 다음 평일로 이동 (대체공휴일)
+    next_day = holiday + timedelta(days=1)
+    while next_day.weekday() >= 5:
+        next_day += timedelta(days=1)
+    return next_day
+
+
+def _is_korea_market_holiday(date):
+    """
+    주어진 날짜가 한국 증시 공휴일(휴장일)인지 확인합니다.
+    양력 고정 공휴일 + 음력 공휴일(설날/추석/부처님오신날) 포함.
+    """
+    year = date.year
+
+    # 음력 공휴일 (연휴 포함 날짜로 직접 명시)
+    if year in KOREA_LUNAR_HOLIDAYS:
+        for h in KOREA_LUNAR_HOLIDAYS[year]:
+            if h.date() == date:
+                return True
+
+    # 양력 고정 공휴일 (대체공휴일 포함)
+    fixed_holidays = [
+        (year, 1, 1),    # 신정
+        (year, 3, 1),    # 삼일절
+        (year, 5, 5),    # 어린이날
+        (year, 6, 6),    # 현충일
+        (year, 8, 15),   # 광복절
+        (year, 10, 3),   # 개천절
+        (year, 10, 9),   # 한글날
+        (year, 12, 25),  # 기독탄신일
+    ]
+    for y, m, d in fixed_holidays:
+        if _korea_observed_date(m, d, y).date() == date:
+            return True
+
+    return False
+
+
+def is_korea_trading_day(now_kst=None):
+    """
+    현재(한국 표준시 기준)가 한국 증시 거래일인지 확인합니다.
+    주말 및 한국 공휴일이면 False를 반환합니다.
+    """
+    if now_kst is None:
+        now_kst = get_korea_now()
+
+    # 주말 제외
+    if now_kst.weekday() >= 5:
+        return False
+
+    # 공휴일 제외
+    if _is_korea_market_holiday(now_kst.date()):
+        return False
+
+    return True
+
+
 if __name__ == "__main__":
     now_et = get_us_eastern_now()
     print(f"현재 미국 동부 시간: {now_et.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"미국 거래일 여부: {is_us_trading_day(now_et)}")
+
+    now_kst = get_korea_now()
+    print(f"현재 한국 시간: {now_kst.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"한국 거래일 여부: {is_korea_trading_day(now_kst)}")

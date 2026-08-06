@@ -14,6 +14,7 @@ class AlertScheduler:
         self.scheduler_thread = None
         self.last_extreme_check_date = None  # 극단 조건 체크 날짜 추적
         self.last_us_market_close_alert_date = None  # 미국장 마감 요약 알림 날짜 추적
+        self.last_korea_market_close_alert_date = None  # 한국장 마감 요약 알림 날짜 추적
 
     def start(self):
         """
@@ -40,6 +41,9 @@ class AlertScheduler:
         
         while self.is_running:
             try:
+                # 한국장 마감 요약 알림 체크 (한국 시간 15:30~16:59)
+                self._check_korea_market_close_alert()
+                
                 # 미국장 마감 요약 알림 체크 (미국 동부 기준 16:00~17:59)
                 self._check_us_market_close_alert()
                 
@@ -112,6 +116,64 @@ class AlertScheduler:
             
         except Exception as e:
             print(f"Error sending US market close summary: {e}")
+
+    def _check_korea_market_close_alert(self):
+        """
+        한국장 마감 후 (한국 시간 15:30~16:59) 시장 요약 알림을 전송합니다.
+        하루에 한 번만 전송됩니다.
+        휴장일(주말/한국 공휴일)에는 전송하지 않습니다.
+        """
+        # 한국 표준시(KST) 기준
+        now_kst = market_calendar.get_korea_now()
+        today_str = now_kst.strftime("%Y-%m-%d")
+        hour = now_kst.hour
+
+        # 이미 오늘 보냈으면 스킵
+        if self.last_korea_market_close_alert_date == today_str:
+            return
+
+        # 한국 시간 15:30~16:59 사이에만 전송 (정규장 마감 이후 요약)
+        if hour == 15:
+            if now_kst.minute < 30:
+                return
+        elif hour != 16:
+            return
+
+        # 휴장일(주말/한국 공휴일)에는 알림을 보내지 않음
+        if not market_calendar.is_korea_trading_day(now_kst):
+            print("📅 오늘은 한국 시장 휴장일입니다. 마감 요약 알림을 건너뜁니다.")
+            return
+
+        # 구독자가 없으면 스킵
+        if not database.get_all_subscriptions():
+            return
+
+        try:
+            print("🇰🇷 Sending Korea market close summary...")
+
+            # 시장 인덱스 데이터 가져오기
+            data = market_indices.fetch_korea_market_close_data()
+
+            # 리포트 생성
+            report_text = market_indices.format_korea_market_close_report(data)
+
+            # 모든 구독자에게 전송
+            all_subscriptions = database.get_all_subscriptions()
+            sent_to_chats = set()
+
+            for chat_id, ticker in all_subscriptions:
+                if chat_id in sent_to_chats:
+                    continue
+
+                topic_id = database.get_chat_topic(chat_id)
+                self.bot.send_message(chat_id, report_text, message_thread_id=topic_id)
+                sent_to_chats.add(chat_id)
+
+            self.last_korea_market_close_alert_date = today_str
+            print("✅ Korea market close summary sent successfully.")
+
+        except Exception as e:
+            print(f"Error sending Korea market close summary: {e}")
 
     def _check_extreme_market_conditions(self):
         """

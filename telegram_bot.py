@@ -197,6 +197,9 @@ class TelegramBot:
             "/지수": "/indices",
             "/시장": "/indices",
             "/i": "/indices",
+            "/korea": "/korea",
+            "/한국": "/korea",
+            "/kr": "/korea",
             "/alerts": "/alerts",
             "/알림": "/alerts",
             "/alert": "/alerts"
@@ -225,6 +228,8 @@ class TelegramBot:
             self._handle_settopic(chat_id, arg, reply_to_message_id, message_thread_id)
         elif normalized_cmd == "/indices":
             self._handle_indices(chat_id, reply_to_message_id, message_thread_id)
+        elif normalized_cmd == "/korea":
+            self._handle_korea(chat_id, reply_to_message_id, message_thread_id)
         elif normalized_cmd == "/alerts":
             self._handle_alerts(chat_id, arg, reply_to_message_id, message_thread_id)
         else:
@@ -262,6 +267,7 @@ class TelegramBot:
             "<i>예시: /pw AAPL, /장기예측 TSLA</i>\n\n"
             "📌 <b>/indices</b> 또는 <b>/지수</b> 또는 <b>/시장</b> - 현재 시장 인덱스 현황을 조회합니다.\n"
             "<i>공포탐욕지수, VIX, 주요 지수(S&P500, NASDAQ, NASDAQ 100, DOW), 환율, 국채수익률을 한눈에 확인</i>\n\n"
+            "📌 <b>/korea</b> 또는 <b>/한국</b> 또는 <b>/kr</b> - 한국 시장(KOSPI/KOSDAQ) 및 원/달러 환율을 조회합니다.\n\n"
             "📌 <b>/help</b> 또는 <b>/도움말</b> - 이 도움말을 표시합니다.\n\n"
             "━━━━━━━━━━━━━━━━━━━\n"
             "🔔 <b>자동 알림 기능</b>\n\n"
@@ -272,6 +278,9 @@ class TelegramBot:
             "🇺🇸 <b>미국장 마감 요약 (매일 5~6시)</b>\n"
             "매일 미국장이 끝난 후 (한국 시간 오전 5~6시 경) 당일 시장 흐름을 요약하여 자동으로 전송합니다.\n"
             "공포탐욕지수, VIX, 주요 지수, 환율 등을 확인하고 하루를 마무리하세요!\n\n"
+            "🇰🇷 <b>한국장 마감 요약 (매일 15:30 이후)</b>\n"
+            "매일 한국장이 끝난 후 (한국 시간 오후 3시 30분 이후) 코스피/코스닥 등락과 원/달러 환율을 자동으로 전송합니다.\n"
+            "공포탐욕지수, VIX, 미국 지수 등 참고 정보도 함께 제공됩니다.\n\n"
             "🚨 <b>극단적 시장 조건 알림</b>\n"
             "다음 조건 감지 시 자동으로 알림을 보내드립니다:\n"
             "• VIX 25 이상 (변동성 확대)\n"
@@ -1002,6 +1011,49 @@ class TelegramBot:
             self.send_message(
                 chat_id, 
                 f"⚠️ 시장 인덱스 데이터 조회 실패: {str(e)}",
+                reply_to_message_id=reply_to_message_id, 
+                message_thread_id=message_thread_id
+            )
+        
+        # 로딩 메시지 삭제
+        if loading_msg_id:
+            try:
+                self.delete_message(chat_id, loading_msg_id)
+            except Exception:
+                pass
+
+    def _handle_korea(self, chat_id, reply_to_message_id=None, message_thread_id=None):
+        """
+        한국 시장 (KOSPI/KOSDAQ) 현황 및 환율을 조회합니다.
+        """
+        # "가져오는 중..." 메시지를 보내고 message_id를 저장
+        loading_msg_id = self.send_message(
+            chat_id, 
+            "🇰🇷 한국 시장 데이터를 가져오는 중...\n"
+            "<i>(KOSPI, KOSDAQ, 원/달러 환율)</i>",
+            reply_to_message_id=reply_to_message_id, 
+            message_thread_id=message_thread_id
+        )
+        
+        try:
+            # 한국 시장 데이터 가져오기
+            data = market_indices.fetch_korea_market_close_data()
+            
+            # 리포트 생성
+            report_text = market_indices.format_korea_market_close_report(data)
+            
+            # 결과 전송
+            self.send_message(
+                chat_id, 
+                report_text, 
+                reply_to_message_id=reply_to_message_id, 
+                message_thread_id=message_thread_id
+            )
+            
+        except Exception as e:
+            self.send_message(
+                chat_id, 
+                f"⚠️ 한국 시장 데이터 조회 실패: {str(e)}",
                 reply_to_message_id=reply_to_message_id, 
                 message_thread_id=message_thread_id
             )
