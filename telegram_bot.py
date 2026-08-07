@@ -190,6 +190,10 @@ class TelegramBot:
         if text.startswith("/"):
             parts = text.split(maxsplit=1)
             command = parts[0].lower()
+            # 단체방에서 봇을 호출하면 "/korea@UKC_Stock_Bot" 처럼 명령어 뒤에
+            # "@봇이름" 접미사가 자동으로 붙습니다. 이 접미사를 제거해 명령어를 인식합니다.
+            if "@" in command:
+                command = command.split("@", 1)[0]
             arg = parts[1].strip() if len(parts) > 1 else ""
             
             # 단체방 Topics 지원: 봇의 응답을 같은 스레드에 보냄
