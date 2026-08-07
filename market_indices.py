@@ -108,27 +108,58 @@ def _extract_previous_close_from_daily(chart_result):
     """
     Yahoo Finance chart API 결과에서 daily OHLC 데이터를 기반으로
     실제 전일 종가를 추출합니다.
-    
-    meta.chartPreviousClose는 range=5d로 요청 시 5일 전의 종가를 반환할 수 있으므로
-    daily OHLC 데이터에서 마지막에서 두 번째 유효 close 값을 사용합니다.
+
+    meta.chartPreviousClose는 range=10d로 요청 시 range 시작 이전 종가(약 며칠 전)를
+    반환할 수 있어 부적합합니다. 또한 includePrePost=true 응답에서는 일부 캔들의 close가
+    None 으로 섞여 있고, 조회 시점(장 전/장중/장마감)에 따라 현재가(regularMarketPrice)에
+    해당하는 캔들의 위치가 달라질 수 있습니다.
+
+    따라서 고정 인덱스(예: [-1], [-2])를 사용하지 않고 아래 우선순위로 동적으로 계산합니다.
+      1. 현재가(regularMarketPrice)와 일치하는 캔들의 직전 유효 close
+         (조회 시점이 달라도 항상 '현재 세션 이전 종가'를 정확히 찾음)
+      2. 마지막 날짜 이전 날짜의 마지막 유효 close (타임스탬프 기반, stock_api.py와 동일 패턴)
+      3. 유효 close가 1개뿐이면 그 값을 반환
     """
     try:
         quote = chart_result.get("indicators", {}).get("quote", [{}])[0]
-        closes = quote.get("close", [])
-        
-        if not closes:
+        closes = quote.get("close", []) or []
+        timestamps = chart_result.get("timestamp", []) or []
+        meta = chart_result.get("meta", {})
+        current_price = meta.get("regularMarketPrice")
+
+        # 정렬된 (timestamp, close) 유효 페어만 추출 (None 제외)
+        pairs = []
+        for ts, c in zip(timestamps, closes):
+            if c is None:
+                continue
+            pairs.append((ts, c))
+
+        if not pairs:
             return None
-        
-        # None이 아닌 close 값들만 추출
-        valid_closes = [c for c in closes if c is not None]
-        
-        if len(valid_closes) >= 2:
-            # 마지막에서 두 번째 값 = 실제 전일 종가
-            return valid_closes[-2]
-        elif len(valid_closes) == 1:
-            return valid_closes[0]
-        
-        return None
+
+        # 1순위: 현재가와 일치하는 캔들의 직전 유효 close
+        if current_price is not None:
+            tolerance = max(1e-6, abs(current_price) * 0.001)
+            match_idx = None
+            for i, (_, c) in enumerate(pairs):
+                if abs(c - current_price) <= tolerance:
+                    match_idx = i  # 마지막 일치 인덱스를 유지
+            if match_idx is not None and match_idx > 0:
+                return pairs[match_idx - 1][1]
+
+        # 2순위: 타임스탬프 기반 - 마지막 날짜(오늘) 이전 날짜의 마지막 유효 close
+        # 한국 지수이므로 KST(UTC+9) 기준으로 날짜를 판별
+        def _kst_date(ts):
+            return time.strftime("%Y-%m-%d", time.gmtime(ts + 9 * 60 * 60))
+
+        last_date = _kst_date(pairs[-1][0])
+        for i in range(len(pairs) - 1, -1, -1):
+            ts, c = pairs[i]
+            if _kst_date(ts) != last_date:
+                return c
+
+        # 3순위: 같은 날짜만 존재하면 마지막 유효 close
+        return pairs[-1][1]
     except (IndexError, AttributeError, TypeError):
         return None
 
