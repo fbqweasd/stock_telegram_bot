@@ -11,6 +11,24 @@ import stock_api
 import predictor
 import market_indices
 
+# Telegram BotCommand 목록
+# setMyCommands API로 등록하면 사용자가 "/" 를 입력할 때 자동완성 메뉴로 표시됩니다.
+# 채팅 하단 메뉴 버튼(≡)에서도 이 목록을 확인/선택할 수 있습니다.
+# BotCommand의 command 는 소문자 영문자로 시작해야 하므로 한국어 명령어는 여기에 포함하지 않습니다.
+COMMANDS = [
+    {"command": "start", "description": "환영 메시지 표시"},
+    {"command": "help", "description": "명령어 도움말 표시"},
+    {"command": "add", "description": "관심 주식 등록 (예: /add AAPL)"},
+    {"command": "del", "description": "관심 주식 삭제 (예: /del AAPL)"},
+    {"command": "list", "description": "구독 중인 주식 리스트와 현재가"},
+    {"command": "predict", "description": "기술적 분석 및 매수/매도 예측 (예: /predict TSLA)"},
+    {"command": "predict_short", "description": "5분봉 단기 예측 (예: /ps AAPL)"},
+    {"command": "predict_weekly", "description": "주봉 장기 예측 (예: /pw AAPL)"},
+    {"command": "indices", "description": "시장 인덱스/공포탐욕지수/환율 조회"},
+    {"command": "korea", "description": "한국 시장(KOSPI/KOSDAQ) 및 원/달러 환율"},
+    {"command": "alerts", "description": "가격 변동 알림 설정/조회"},
+]
+
 class TelegramBot:
     def __init__(self):
         self.token = TELEGRAM_BOT_TOKEN
@@ -96,6 +114,23 @@ class TelegramBot:
         if updates and updates.get("ok"):
             return updates.get("result", [])
         return []
+
+    def set_my_commands(self):
+        """
+        setMyCommands API를 호출하여 봇 명령어를 등록합니다.
+        등록된 명령어는 사용자가 "/" 를 입력하면 자동완성 메뉴로 표시되고,
+        채팅 하단 메뉴 버튼(≡)에서도 확인/선택할 수 있습니다.
+        """
+        if not self.token:
+            print("Cannot set bot commands: TELEGRAM_BOT_TOKEN is empty.")
+            return None
+        payload = {"commands": COMMANDS}
+        result = self._api_call("setMyCommands", payload)
+        if result and result.get("ok"):
+            print(f"✅ Registered {len(COMMANDS)} bot commands for autocomplete (/ 메뉴).")
+        else:
+            print("⚠️ Failed to set bot commands.")
+        return result
 
     def start_polling(self):
         """

@@ -37,6 +37,8 @@ def main():
     # 2. Instantiate and start Telegram Bot polling
     print("🤖 Starting Telegram Polling Service...")
     bot = TelegramBot()
+    # 봇 명령어를 등록해 사용자가 "/" 입력 시 자동완성 메뉴로 확인할 수 있게 합니다.
+    bot.set_my_commands()
     bot.start_polling()
     
     # 3. Instantiate and start Background Indicator Alert Scheduler
