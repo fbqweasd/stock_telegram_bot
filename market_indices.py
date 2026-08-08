@@ -374,6 +374,154 @@ def fetch_us_dollar_index():
     return None
 
 
+def fetch_weekly_indices_data():
+    """
+    주요 지수의 주간 변동 데이터를 가져옵니다.
+    - 미국: S&P 500 (^GSPC), NASDAQ (^IXIC), DOW (^DJI)
+    - 한국: KOSPI (^KS11), KOSDAQ (^KQ11)
+
+    지난주(월~금)의 시작 시가와 마지막 종가를 비교하여 주간 변동률을 계산합니다.
+
+    반환: {
+        sp500: {...}, nasdaq: {...}, dow: {...},
+        kospi: {...}, kosdaq: {...},
+        timestamp: "..."
+    }
+    """
+    indices = {
+        "sp500": {"symbol": "^GSPC", "name": "S&P 500"},
+        "nasdaq": {"symbol": "^IXIC", "name": "NASDAQ"},
+        "dow": {"symbol": "^DJI", "name": "DOW"},
+        "kospi": {"symbol": "^KS11", "name": "KOSPI"},
+        "kosdaq": {"symbol": "^KQ11", "name": "KOSDAQ"}
+    }
+
+    result = {}
+
+    for key, info in indices.items():
+        weekly = _fetch_weekly_change(info["symbol"])
+        if weekly:
+            result[key] = {
+                "name": info["name"],
+                **weekly
+            }
+        time.sleep(0.5)  # API rate limit 준수
+
+    result["timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() + 9 * 60 * 60))
+
+    return result
+
+
+def _fetch_weekly_change(symbol):
+    """
+    지난주(월~금) 주간 변동률을 계산합니다.
+    Yahoo Finance에서 range=1mo&interval=1d 데이터를 가져와
+    지난주 월요일 시가와 금요일 종가를 비교합니다.
+
+    한국 주식/지수: 월요일 시가 = 월요일 open, 금요일 종가 = 금요일 close
+    미국 주식/지수: 한국 월요일 아침 = 미국 일요일 저녁이므로 실제 거래일이
+                   한국 시간 기준으로 (월~금)이 아닌 (화~토)가 될 수 있습니다.
+                   이 함수는 KST 기준 날짜로만 주를 구분하므로,
+                   미국 지수는 한국 시각 월요일~금요일에 해당하는 거래일 데이터를 사용합니다.
+
+    반환: {
+        value: float,          # 지난주 마지막 거래일 종가
+        week_change: float,    # 주간 변동 금액
+        week_change_pct: float # 주간 변동률 (%)
+    } 또는 None
+    """
+    encoded_symbol = urllib.parse.quote(symbol)
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_symbol}?range=1mo&interval=1d&includePrePost=false"
+
+    try:
+        response = _make_request(url)
+        if response:
+            data = json.loads(response)
+            result = data.get("chart", {}).get("result", [{}])[0]
+            timestamps = result.get("timestamp", [])
+            quote = result.get("indicators", {}).get("quote", [{}])[0]
+            closes = quote.get("close", [])
+            opens = quote.get("open", [])
+
+            # 유효한 (timestamp, open, close) 페어만 추출
+            pairs = []
+            for i in range(len(timestamps)):
+                if i < len(closes) and closes[i] is not None and i < len(opens) and opens[i] is not None:
+                    pairs.append((timestamps[i], opens[i], closes[i]))
+
+            if len(pairs) < 2:
+                return None
+
+            # KST(UTC+9) 기준 날짜 변환
+            def _kst_date(ts):
+                return time.strftime("%Y-%m-%d", time.gmtime(ts + 9 * 60 * 60))
+
+            def _kst_weekday(ts):
+                # 0=월요일 ... 6=일요일 (KST 기준)
+                return time.gmtime(ts + 9 * 60 * 60).tm_wday
+
+            # 지난주(월~금) 범위 계산 (KST 기준)
+            now_kst = time.gmtime(time.time() + 9 * 60 * 60)
+            today_weekday = now_kst.tm_wday
+
+            # 이번 주 월요일 00:00 (KST)
+            this_monday_ts = time.time() - (today_weekday * 86400)
+            this_monday = time.gmtime(this_monday_ts + 9 * 60 * 60)
+            this_monday_str = time.strftime("%Y-%m-%d", this_monday)
+
+            # 지난주 월요일~금요일 날짜 문자열
+            last_monday_ts = this_monday_ts - 7 * 86400
+            last_friday_ts = this_monday_ts - 3 * 86400
+            last_monday_str = time.strftime("%Y-%m-%d", time.gmtime(last_monday_ts + 9 * 60 * 60))
+            last_friday_str = time.strftime("%Y-%m-%d", time.gmtime(last_friday_ts + 9 * 60 * 60))
+
+            # 지난주 월요일 시가와 금요일 종가 찾기
+            week_start_price = None
+            week_end_price = None
+
+            for i in range(len(pairs)):
+                ts, o, c = pairs[i]
+                date_str = _kst_date(ts)
+                if date_str == last_monday_str:
+                    week_start_price = o
+                if date_str == last_friday_str:
+                    week_end_price = c
+
+            # 금요일 데이터가 없으면 (휴장 등) 가장 가까운 이전 거래일 사용
+            if week_end_price is None:
+                for i in range(len(pairs) - 1, -1, -1):
+                    ts, o, c = pairs[i]
+                    date_str = _kst_date(ts)
+                    if date_str < last_friday_str and date_str >= last_monday_str:
+                        week_end_price = c
+                        break
+
+            # 월요일 데이터가 없으면 (휴장 등) 가장 가까운 이후 거래일 사용
+            if week_start_price is None:
+                for i in range(len(pairs)):
+                    ts, o, c = pairs[i]
+                    date_str = _kst_date(ts)
+                    if date_str > last_monday_str and date_str <= last_friday_str:
+                        week_start_price = o
+                        break
+
+            if week_start_price is None or week_end_price is None or week_start_price <= 0:
+                return None
+
+            week_change = week_end_price - week_start_price
+            week_change_pct = (week_change / week_start_price) * 100
+
+            return {
+                "value": round(week_end_price, 2),
+                "week_change": round(week_change, 2),
+                "week_change_pct": round(week_change_pct, 2)
+            }
+    except Exception as e:
+        print(f"Error fetching weekly change for {symbol}: {e}")
+
+    return None
+
+
 def fetch_all_indices():
     """
     모든 시장 인덱스 데이터를 한 번에 가져옵니다.
@@ -982,6 +1130,90 @@ def format_us_market_close_report(data):
     lines.append("\n━━━━━━━━━━━━━━━━━━━")
     lines.append("<i>💡 /indices 명령어로 상세 시장 현황을 확인하세요.</i>")
     
+    return "\n".join(lines)
+
+
+def format_weekly_report(data):
+    """
+    주간 시장 요약 리포트 형식
+    - 주요 지수 (미국: S&P 500, NASDAQ, DOW / 한국: KOSPI, KOSDAQ) 주간 변동
+    - 관심 종목 주간 변동
+    - 공포탐욕지수, VIX 참고 정보
+
+    data: {
+        indices: { sp500: {...}, nasdaq: {...}, dow: {...}, kospi: {...}, kosdaq: {...} },
+        stocks: [ { ticker, name, currency, value, week_change, week_change_pct }, ... ],
+        fear_greed: {...},
+        vix: {...},
+        week_start: "YYYY-MM-DD",
+        week_end: "YYYY-MM-DD",
+        timestamp: "..."
+    }
+    """
+    lines = []
+    lines.append("<b>📊 주간 시장 요약 리포트</b>")
+    lines.append(f"📅 <code>{data.get('week_start', '')} ~ {data.get('week_end', '')}</code>")
+    lines.append(f"⏱ 생성시간: <code>{data.get('timestamp', '')}</code>")
+    lines.append("━━━━━━━━━━━━━━━━━━━")
+
+    # 주요 지수 주간 변동
+    indices = data.get("indices", {})
+    if indices:
+        lines.append("\n<b>📈 주요 지수 주간 변동</b>")
+        for key in ["sp500", "nasdaq", "dow", "kospi", "kosdaq"]:
+            idx = indices.get(key)
+            if idx:
+                name = idx.get("name", key)
+                value = idx.get("value", 0)
+                week_change = idx.get("week_change", 0)
+                week_change_pct = idx.get("week_change_pct", 0)
+
+                emoji = "🟢" if week_change_pct > 0 else "🔴" if week_change_pct < 0 else "⚪"
+                sign = "+" if week_change_pct > 0 else ""
+
+                lines.append(f"• {emoji} <b>{name}</b>: {value:,.2f} ({sign}{week_change_pct:.2f}% · {sign}{week_change:,.2f})")
+
+    # 관심 종목 주간 변동
+    stocks = data.get("stocks", [])
+    if stocks:
+        lines.append("\n<b>⭐ 관심 종목 주간 변동</b>")
+        for stock in stocks:
+            ticker = stock.get("ticker", "")
+            name = stock.get("name", ticker)
+            currency = stock.get("currency", "USD")
+            value = stock.get("value", 0)
+            week_change = stock.get("week_change", 0)
+            week_change_pct = stock.get("week_change_pct", 0)
+
+            emoji = "🟢" if week_change_pct > 0 else "🔴" if week_change_pct < 0 else "⚪"
+            sign = "+" if week_change_pct > 0 else ""
+
+            lines.append(f"• {emoji} <b>{name}</b> ({ticker}): {value:,.2f} {currency} ({sign}{week_change_pct:.2f}% · {sign}{week_change:,.2f})")
+
+    # 참고 정보
+    lines.append("\n━━━━━━━━━━━━━━━━━━━")
+    lines.append("<b>🌐 참고 정보</b>")
+
+    fg = data.get("fear_greed")
+    if fg and fg.get("value") is not None:
+        value = fg["value"]
+        classification = fg.get("classification", "")
+        week_ago = fg.get("week_ago")
+        week_change_str = ""
+        if week_ago:
+            week_change = value - week_ago
+            week_change_str = f" (1주 전 대비 {week_change:+.1f})"
+        lines.append(f"• 🎭 공포탐욕지수: <b>{value:.1f}</b> ({classification}){week_change_str}")
+
+    vix = data.get("vix")
+    if vix:
+        value = vix["value"]
+        change_pct = vix.get("change_pct", 0)
+        lines.append(f"• 📊 VIX: {value:.2f} ({change_pct:+.2f}%)")
+
+    lines.append("\n━━━━━━━━━━━━━━━━━━━")
+    lines.append("<i>💡 /indices 명령어로 상세 시장 현황을 확인하세요.</i>")
+
     return "\n".join(lines)
 
 

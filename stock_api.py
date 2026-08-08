@@ -647,6 +647,110 @@ def fetch_stock_data_weekly(ticker):
     }
 
 
+def fetch_weekly_change(ticker):
+    """
+    지난 1주일간(월~금) 종목의 주간 변동률을 계산합니다.
+    일봉 데이터(range=60d)에서 지난주 월요일 시가와 금요일 종가를 추출합니다.
+
+    반환: {
+        ticker, name, currency,
+        week_start_date, week_end_date,
+        week_start_price, week_end_price,
+        change, change_pct
+    } 또는 None
+    """
+    ticker = ticker.strip().upper()
+
+    # 일봉 데이터 가져오기 (60일치)
+    daily = _get_daily_data(ticker)
+    if not daily or len(daily["closes"]) < 10:
+        return None
+
+    timestamps = daily["timestamps"]
+    closes = daily["closes"]
+    opens = daily["opens"]
+
+    # KST 기준 날짜 변환
+    def _kst_date(ts):
+        return time.strftime("%Y-%m-%d", time.gmtime(ts + 9 * 60 * 60))
+
+    def _kst_weekday(ts):
+        # 0=월요일 ... 6=일요일 (KST 기준)
+        return time.gmtime(ts + 9 * 60 * 60).tm_wday
+
+    # 지난주(월~금) 데이터 찾기
+    # 현재 날짜 기준으로 지난주 월요일~금요일 범위 계산
+    now_kst = time.gmtime(time.time() + 9 * 60 * 60)
+    today_weekday = now_kst.tm_wday  # 0=월요일
+
+    # 이번 주 월요일 날짜 (KST)
+    this_monday_ts = time.time() - (today_weekday * 86400)
+    this_monday = time.gmtime(this_monday_ts + 9 * 60 * 60)
+    this_monday_str = time.strftime("%Y-%m-%d", this_monday)
+
+    # 지난주 월요일~금요일
+    last_monday_ts = this_monday_ts - 7 * 86400
+    last_friday_ts = this_monday_ts - 3 * 86400  # 금요일 = 월요일 + 4일
+
+    last_monday_str = time.strftime("%Y-%m-%d", time.gmtime(last_monday_ts + 9 * 60 * 60))
+    last_friday_str = time.strftime("%Y-%m-%d", time.gmtime(last_friday_ts + 9 * 60 * 60))
+
+    # 지난주 월요일 시가와 금요일 종가 찾기
+    week_start_price = None
+    week_end_price = None
+    week_start_date = None
+    week_end_date = None
+
+    for i in range(len(timestamps)):
+        date_str = _kst_date(timestamps[i])
+        if date_str == last_monday_str:
+            week_start_price = opens[i] if i < len(opens) and opens[i] is not None else closes[i]
+            week_start_date = date_str
+        if date_str == last_friday_str:
+            week_end_price = closes[i]
+            week_end_date = date_str
+
+    # 금요일 데이터가 없으면 (휴장 등) 가장 가까운 이전 거래일 사용
+    if week_end_price is None:
+        for i in range(len(timestamps) - 1, -1, -1):
+            date_str = _kst_date(timestamps[i])
+            if date_str < last_friday_str and date_str >= last_monday_str:
+                week_end_price = closes[i]
+                week_end_date = date_str
+                break
+
+    # 월요일 데이터가 없으면 (휴장 등) 가장 가까운 이후 거래일 사용
+    if week_start_price is None:
+        for i in range(len(timestamps)):
+            date_str = _kst_date(timestamps[i])
+            if date_str > last_monday_str and date_str <= last_friday_str:
+                week_start_price = opens[i] if i < len(opens) and opens[i] is not None else closes[i]
+                week_start_date = date_str
+                break
+
+    if week_start_price is None or week_end_price is None or week_start_price <= 0:
+        return None
+
+    change = week_end_price - week_start_price
+    change_pct = (change / week_start_price) * 100
+
+    # 종목명 가져오기
+    stock_name = fetch_stock_name(ticker)
+    currency = daily.get("currency", "USD")
+
+    return {
+        "ticker": ticker,
+        "name": stock_name,
+        "currency": currency,
+        "week_start_date": week_start_date,
+        "week_end_date": week_end_date,
+        "week_start_price": round(week_start_price, 2),
+        "week_end_price": round(week_end_price, 2),
+        "change": round(change, 2),
+        "change_pct": round(change_pct, 2)
+    }
+
+
 def fetch_current_price_only(ticker):
     """
     가벼운 현재가 조회용 함수.

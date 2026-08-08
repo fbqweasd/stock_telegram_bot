@@ -121,6 +121,17 @@ def init_db():
                 PRIMARY KEY (chat_id, ticker, alert_type, alert_date)
             )
         """)
+
+        # Table to track weekly report sends (주간 리포트 전송 기록)
+        # 동일한 주(week_start)에는 1번만 전송하도록 관리
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS weekly_report_sends (
+                chat_id INTEGER,
+                week_start TEXT,
+                sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (chat_id, week_start)
+            )
+        """)
         conn.commit()
 
 def add_subscription(chat_id, ticker):
@@ -409,39 +420,39 @@ def record_daily_alert(chat_id, ticker, alert_date, threshold_pct, direction):
         return cursor.rowcount > 0
 
 # ================================================================
-# High breakout alert tracking (역대/52주 최고가 돌파 알림)
-# 동일한 (티커, 유형) 조합은 하루에 1번만 알림을 보내도록 관리
+# Weekly report tracking (주간 리포트 전송 기록)
+# 동일한 주(week_start)에는 1번만 전송하도록 관리
 # ================================================================
 
-def has_sent_high_breakout_alert(chat_id, ticker, alert_type, alert_date):
+def has_sent_weekly_report(chat_id, week_start):
     """
-    특정 사용자/티커/유형/날짜에 최고가 돌파 알림을 이미 보냈는지 확인합니다.
+    특정 사용자가 해당 주(week_start)에 주간 리포트를 이미 받았는지 확인합니다.
     """
-    ticker = ticker.upper().strip()
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT 1 FROM high_breakout_alerts WHERE chat_id = ? AND ticker = ? AND alert_type = ? AND alert_date = ?",
-            (chat_id, ticker, alert_type, alert_date)
+            "SELECT 1 FROM weekly_report_sends WHERE chat_id = ? AND week_start = ?",
+            (chat_id, week_start)
         )
         return cursor.fetchone() is not None
 
 
-def record_high_breakout_alert(chat_id, ticker, alert_type, alert_date, price):
+def record_weekly_report_send(chat_id, week_start):
     """
-    최고가 돌파 알림을 보냈음을 기록합니다.
+    주간 리포트를 보냈음을 기록합니다.
     """
-    ticker = ticker.upper().strip()
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT OR IGNORE INTO high_breakout_alerts (chat_id, ticker, alert_type, alert_date, price)
-            VALUES (?, ?, ?, ?, ?)
-        """, (chat_id, ticker, alert_type, alert_date, price))
+            INSERT OR IGNORE INTO weekly_report_sends (chat_id, week_start, sent_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+        """, (chat_id, week_start))
         conn.commit()
         return cursor.rowcount > 0
 
 
+# ================================================================
+# Chat topic settings (단체방 알림 토픽 설정)
 # ================================================================
 # Chat topic settings (단체방 알림 토픽 설정)
 # ================================================================

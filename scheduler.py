@@ -6,6 +6,7 @@ import stock_api
 import indicators
 import market_indices
 import market_calendar
+import weekly_report
 
 class AlertScheduler:
     def __init__(self, bot_instance):
@@ -15,6 +16,7 @@ class AlertScheduler:
         self.last_extreme_check_date = None  # 극단 조건 체크 날짜 추적
         self.last_us_market_close_alert_date = None  # 미국장 마감 요약 알림 날짜 추적
         self.last_korea_market_close_alert_date = None  # 한국장 마감 요약 알림 날짜 추적
+        self.last_weekly_report_date = None  # 주간 리포트 전송 주(week_start) 추적
 
     def start(self):
         """
@@ -41,6 +43,9 @@ class AlertScheduler:
         
         while self.is_running:
             try:
+                # 주간 리포트 체크 (매주 월요일 아침)
+                self._check_weekly_report()
+                
                 # 한국장 마감 요약 알림 체크 (한국 시간 15:30~16:59)
                 self._check_korea_market_close_alert()
                 
@@ -64,6 +69,60 @@ class AlertScheduler:
                 if not self.is_running:
                     break
                 time.sleep(1)
+
+    def _check_weekly_report(self):
+        """
+        매주 월요일 아침(한국 시간 08:00~09:59)에 지난주 주간 시장 요약 리포트를 전송합니다.
+        동일한 주(week_start)에는 1번만 전송됩니다.
+        """
+        # 한국 표준시(KST) 기준
+        now_kst = market_calendar.get_korea_now()
+        today_str = now_kst.strftime("%Y-%m-%d")
+        weekday = now_kst.weekday()  # 0=월요일
+        hour = now_kst.hour
+
+        # 매주 월요일 아침 08:00~09:59에만 전송
+        if weekday != 0:  # 월요일이 아니면 스킵
+            return
+        if hour < 8 or hour > 9:
+            return
+
+        # 구독자가 없으면 스킵
+        if not database.get_all_subscriptions():
+            return
+
+        try:
+            print("📊 Sending weekly market report...")
+
+            # 주간 리포트 데이터 수집
+            data = weekly_report.fetch_weekly_report_data()
+            week_start = data.get("week_start", "")
+
+            # 리포트 생성
+            report_text = weekly_report.format_weekly_report(data)
+
+            # 모든 구독자에게 전송 (동일한 주에는 1번만)
+            all_subscriptions = database.get_all_subscriptions()
+            sent_to_chats = set()
+
+            for chat_id, ticker in all_subscriptions:
+                if chat_id in sent_to_chats:
+                    continue
+
+                # 이미 이번 주 리포트를 받았으면 스킵
+                if database.has_sent_weekly_report(chat_id, week_start):
+                    continue
+
+                topic_id = database.get_chat_topic(chat_id)
+                self.bot.send_message(chat_id, report_text, message_thread_id=topic_id)
+                database.record_weekly_report_send(chat_id, week_start)
+                sent_to_chats.add(chat_id)
+
+            self.last_weekly_report_date = week_start
+            print(f"✅ Weekly market report sent successfully. (Week: {week_start})")
+
+        except Exception as e:
+            print(f"Error sending weekly market report: {e}")
 
     def _check_us_market_close_alert(self):
         """

@@ -10,6 +10,7 @@ import database
 import stock_api
 import predictor
 import market_indices
+import weekly_report
 
 # Telegram BotCommand 목록
 # setMyCommands API로 등록하면 사용자가 "/" 를 입력할 때 자동완성 메뉴로 표시됩니다.
@@ -27,6 +28,7 @@ COMMANDS = [
     {"command": "indices", "description": "시장 인덱스/공포탐욕지수/환율 조회"},
     {"command": "korea", "description": "한국 시장(KOSPI/KOSDAQ) 및 원/달러 환율"},
     {"command": "alerts", "description": "가격 변동 알림 설정/조회"},
+    {"command": "weekly", "description": "지난주 주요지수 및 관심종목 주간 요약 리포트"},
 ]
 
 class TelegramBot:
@@ -241,7 +243,11 @@ class TelegramBot:
             "/kr": "/korea",
             "/alerts": "/alerts",
             "/알림": "/alerts",
-            "/alert": "/alerts"
+            "/alert": "/alerts",
+            "/weekly": "/weekly",
+            "/주간": "/weekly",
+            "/주간리포트": "/weekly",
+            "/w": "/weekly"
         }
         
         # 명령어 정규화
@@ -271,6 +277,8 @@ class TelegramBot:
             self._handle_korea(chat_id, reply_to_message_id, message_thread_id)
         elif normalized_cmd == "/alerts":
             self._handle_alerts(chat_id, arg, reply_to_message_id, message_thread_id)
+        elif normalized_cmd == "/weekly":
+            self._handle_weekly(chat_id, reply_to_message_id, message_thread_id)
         else:
             self.send_message(chat_id, "⚠️ 알 수 없는 명령어입니다. 사용 가능한 명령어를 보려면 /help 를 입력하세요.",
                             reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
@@ -307,6 +315,8 @@ class TelegramBot:
             "📌 <b>/indices</b> 또는 <b>/지수</b> 또는 <b>/시장</b> - 현재 시장 인덱스 현황을 조회합니다.\n"
             "<i>공포탐욕지수, VIX, 주요 지수(S&P500, NASDAQ, NASDAQ 100, DOW), 환율, 국채수익률을 한눈에 확인</i>\n\n"
             "📌 <b>/korea</b> 또는 <b>/한국</b> 또는 <b>/kr</b> - 한국 시장(KOSPI/KOSDAQ) 및 원/달러 환율을 조회합니다.\n\n"
+            "📌 <b>/weekly</b> 또는 <b>/주간</b> 또는 <b>/w</b> - 지난주 주요 지수 및 관심 종목의 주간 변화 요약 리포트를 제공합니다.\n"
+            "<i>주요 지수(S&P500, NASDAQ, DOW, KOSPI, KOSDAQ)와 구독 중인 종목의 주간 변동을 한눈에 확인</i>\n\n"
             "📌 <b>/help</b> 또는 <b>/도움말</b> - 이 도움말을 표시합니다.\n\n"
             "━━━━━━━━━━━━━━━━━━━\n"
             "🔔 <b>자동 알림 기능</b>\n\n"
@@ -1101,6 +1111,50 @@ class TelegramBot:
                 message_thread_id=message_thread_id
             )
         
+        # 로딩 메시지 삭제
+        if loading_msg_id:
+            try:
+                self.delete_message(chat_id, loading_msg_id)
+            except Exception:
+                pass
+
+    def _handle_weekly(self, chat_id, reply_to_message_id=None, message_thread_id=None):
+        """
+        지난주 주요 지수 및 관심 종목의 주간 변화 요약 리포트를 제공합니다.
+        /weekly 또는 /주간 또는 /w
+        """
+        # "가져오는 중..." 메시지를 보내고 message_id를 저장
+        loading_msg_id = self.send_message(
+            chat_id,
+            "📊 주간 시장 요약 데이터를 수집하는 중...\n"
+            "<i>(주요 지수, 관심 종목 주간 변동)</i>",
+            reply_to_message_id=reply_to_message_id,
+            message_thread_id=message_thread_id
+        )
+
+        try:
+            # 주간 리포트 데이터 수집
+            data = weekly_report.fetch_weekly_report_data()
+
+            # 리포트 생성
+            report_text = weekly_report.format_weekly_report(data)
+
+            # 결과 전송
+            self.send_message(
+                chat_id,
+                report_text,
+                reply_to_message_id=reply_to_message_id,
+                message_thread_id=message_thread_id
+            )
+
+        except Exception as e:
+            self.send_message(
+                chat_id,
+                f"⚠️ 주간 리포트 생성 실패: {str(e)}",
+                reply_to_message_id=reply_to_message_id,
+                message_thread_id=message_thread_id
+            )
+
         # 로딩 메시지 삭제
         if loading_msg_id:
             try:
