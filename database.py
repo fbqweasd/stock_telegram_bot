@@ -107,6 +107,20 @@ def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Table to track high breakout alerts (역대/52주 최고가 돌파 알림)
+        # 동일한 (티커, 유형) 조합은 하루에 1번만 알림을 보내기 위해 사용
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS high_breakout_alerts (
+                chat_id INTEGER,
+                ticker TEXT,
+                alert_type TEXT,
+                alert_date TEXT,
+                price REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (chat_id, ticker, alert_type, alert_date)
+            )
+        """)
         conn.commit()
 
 def add_subscription(chat_id, ticker):
@@ -393,6 +407,40 @@ def record_daily_alert(chat_id, ticker, alert_date, threshold_pct, direction):
         """, (chat_id, ticker, alert_date, threshold_pct, direction))
         conn.commit()
         return cursor.rowcount > 0
+
+# ================================================================
+# High breakout alert tracking (역대/52주 최고가 돌파 알림)
+# 동일한 (티커, 유형) 조합은 하루에 1번만 알림을 보내도록 관리
+# ================================================================
+
+def has_sent_high_breakout_alert(chat_id, ticker, alert_type, alert_date):
+    """
+    특정 사용자/티커/유형/날짜에 최고가 돌파 알림을 이미 보냈는지 확인합니다.
+    """
+    ticker = ticker.upper().strip()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT 1 FROM high_breakout_alerts WHERE chat_id = ? AND ticker = ? AND alert_type = ? AND alert_date = ?",
+            (chat_id, ticker, alert_type, alert_date)
+        )
+        return cursor.fetchone() is not None
+
+
+def record_high_breakout_alert(chat_id, ticker, alert_type, alert_date, price):
+    """
+    최고가 돌파 알림을 보냈음을 기록합니다.
+    """
+    ticker = ticker.upper().strip()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR IGNORE INTO high_breakout_alerts (chat_id, ticker, alert_type, alert_date, price)
+            VALUES (?, ?, ?, ?, ?)
+        """, (chat_id, ticker, alert_type, alert_date, price))
+        conn.commit()
+        return cursor.rowcount > 0
+
 
 # ================================================================
 # Chat topic settings (단체방 알림 토픽 설정)

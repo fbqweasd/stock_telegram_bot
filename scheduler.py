@@ -50,6 +50,9 @@ class AlertScheduler:
                 # 극단적 시장 조건 체크 (하루 2~3번)
                 self._check_extreme_market_conditions()
                 
+                # 지수 최고치 돌파 체크
+                self._check_index_high_breakouts()
+                
                 print("⏳ Periodic stock check sequence initiated...")
                 self._check_all_subscribed_stocks()
                 print("✅ Periodic stock check complete.")
@@ -248,6 +251,163 @@ class AlertScheduler:
         except Exception as e:
             print(f"Error checking extreme market conditions: {e}")
 
+    def _check_index_high_breakouts(self):
+        """
+        주요 지수(S&P 500, NASDAQ, DOW, KOSPI, KOSDAQ)의
+        역대 최고가 또는 52주 최고가 돌파를 감지하고 알림을 전송합니다.
+        동일한 (지수, 유형) 조합은 하루에 1번만 알림을 전송합니다.
+        """
+        # 구독자가 없으면 스킵
+        if not database.get_all_subscriptions():
+            return
+
+        # 오늘 날짜 (KST 기준)
+        kst_offset = 9 * 60 * 60
+        today_str = time.strftime("%Y-%m-%d", time.gmtime(time.time() + kst_offset))
+
+        try:
+            # 지수 최고치 데이터 가져오기
+            highs_data = market_indices.fetch_all_index_highs()
+            if not highs_data:
+                return
+
+            # 현재 지수 값 가져오기
+            current_prices = {}
+            indices_data = market_indices.fetch_market_indices()
+            for key, idx_data in indices_data.items():
+                current_prices[key] = idx_data.get("value")
+
+            # 한국 지수 현재 값
+            korea_data = market_indices.fetch_korea_market_indices()
+            for key, idx_data in korea_data.items():
+                current_prices[key] = idx_data.get("value")
+
+            # 최고치 돌파 감지
+            breakouts = market_indices.check_index_high_breakouts(highs_data, current_prices)
+            if not breakouts:
+                return
+
+            # 알림 생성
+            alert_text = "<b>🏆 지수 최고치 돌파 알림</b>\n"
+            alert_text += f"⏱ 시간: <code>{time.strftime('%Y-%m-%d %H:%M', time.gmtime(time.time() + kst_offset))}</code>\n"
+            alert_text += "━━━━━━━━━━━━━━━━━━━\n\n"
+
+            for breakout_type, message in breakouts:
+                alert_text += f"{message}\n"
+
+            alert_text += "\n━━━━━━━━━━━━━━━━━━━\n"
+            alert_text += "<i>💡 /indices 명령어로 상세 현황을 확인하세요.</i>"
+
+            # 모든 구독자에게 전송 (하루 1번 제한)
+            all_subscriptions = database.get_all_subscriptions()
+            sent_to_chats = set()
+
+            for chat_id, ticker in all_subscriptions:
+                if chat_id in sent_to_chats:
+                    continue
+                if not database.get_chat_alerts_enabled(chat_id):
+                    continue
+
+                # 오늘 이미 최고치 알림을 보냈는지 확인
+                if database.has_sent_high_breakout_alert(chat_id, "INDEX", "ALL", today_str):
+                    continue
+
+                topic_id = database.get_chat_topic(chat_id)
+                self.bot.send_message(chat_id, alert_text, message_thread_id=topic_id)
+                database.record_high_breakout_alert(chat_id, "INDEX", "ALL", today_str, 0)
+                sent_to_chats.add(chat_id)
+
+            print(f"🏆 Index high breakout alert sent: {len(breakouts)} breakouts detected.")
+
+        except Exception as e:
+            print(f"Error checking index high breakouts: {e}")
+
+    def _check_stock_high_breakouts(self, ticker, stock_data):
+        """
+        개별 종목의 역대 최고가 또는 52주 최고가 돌파를 감지하고 알림을 전송합니다.
+        동일한 (티커, 유형) 조합은 하루에 1번만 알림을 전송합니다.
+        """
+        current_price = stock_data.get("current_price")
+        if current_price is None or current_price <= 0:
+            return
+
+        # 구독자 확인
+        subscribers = database.get_subscribers_for_ticker(ticker)
+        if not subscribers:
+            return
+
+        # 오늘 날짜 (KST 기준)
+        kst_offset = 9 * 60 * 60
+        today_str = time.strftime("%Y-%m-%d", time.gmtime(time.time() + kst_offset))
+
+        try:
+            # 최고치 데이터 가져오기
+            highs_data = stock_api.fetch_highs_data(ticker)
+            if not highs_data:
+                return
+
+            stock_name = stock_data.get("name", ticker)
+            currency = stock_data.get("currency", "USD")
+
+            # 역대 최고가 돌파 체크
+            all_time_high = highs_data.get("all_time_high")
+            all_time_high_date = highs_data.get("all_time_high_date")
+
+            if all_time_high is not None and current_price > all_time_high:
+                pct_above = ((current_price - all_time_high) / all_time_high) * 100
+                alert_text = (
+                    f"<b>🏆 [{stock_name}] 역대 최고가 돌파!</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━\n"
+                    f"💵 현재가: <b>{current_price:.2f} {currency}</b>\n"
+                    f"📈 기존 역대 최고가: {all_time_high:.2f} {currency} ({all_time_high_date or 'N/A'})\n"
+                    f"📊 돌파 폭: <b>+{pct_above:.2f}%</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━\n"
+                    f"💡 상세 분석 리포트는 <code>/predict {ticker}</code> 를 입력하세요!"
+                )
+
+                for chat_id in subscribers:
+                    if not database.get_chat_alerts_enabled(chat_id):
+                        continue
+                    if database.has_sent_high_breakout_alert(chat_id, ticker, "ALL_TIME_HIGH", today_str):
+                        continue
+
+                    topic_id = database.get_chat_topic(chat_id)
+                    self.bot.send_message(chat_id, alert_text, message_thread_id=topic_id)
+                    database.record_high_breakout_alert(chat_id, ticker, "ALL_TIME_HIGH", today_str, current_price)
+
+            # 52주 최고가 돌파 체크 (역대 최고가와 다를 때만)
+            week52_high = highs_data.get("week52_high")
+            week52_high_date = highs_data.get("week52_high_date")
+
+            if week52_high is not None and current_price > week52_high:
+                # 역대 최고가도 돌파한 경우에는 52주 알림은 생략 (중복 방지)
+                if all_time_high is not None and current_price > all_time_high:
+                    return
+
+                pct_above = ((current_price - week52_high) / week52_high) * 100
+                alert_text = (
+                    f"<b>📈 [{stock_name}] 52주 최고가 돌파!</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━\n"
+                    f"💵 현재가: <b>{current_price:.2f} {currency}</b>\n"
+                    f"📈 기존 52주 최고가: {week52_high:.2f} {currency} ({week52_high_date or 'N/A'})\n"
+                    f"📊 돌파 폭: <b>+{pct_above:.2f}%</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━\n"
+                    f"💡 상세 분석 리포트는 <code>/predict {ticker}</code> 를 입력하세요!"
+                )
+
+                for chat_id in subscribers:
+                    if not database.get_chat_alerts_enabled(chat_id):
+                        continue
+                    if database.has_sent_high_breakout_alert(chat_id, ticker, "WEEK52_HIGH", today_str):
+                        continue
+
+                    topic_id = database.get_chat_topic(chat_id)
+                    self.bot.send_message(chat_id, alert_text, message_thread_id=topic_id)
+                    database.record_high_breakout_alert(chat_id, ticker, "WEEK52_HIGH", today_str, current_price)
+
+        except Exception as e:
+            print(f"Error checking high breakouts for {ticker}: {e}")
+
     def _check_all_subscribed_stocks(self):
         """
         Gathers unique tickers, processes indicators, and sends alerts if events trigger.
@@ -264,6 +424,9 @@ class AlertScheduler:
                 if not stock_data:
                     print(f"Skipping {ticker} scan - could not retrieve stock data.")
                     continue
+
+                # 최고치 돌파 체크
+                self._check_stock_high_breakouts(ticker, stock_data)
 
                 self._process_ticker_alerts(ticker, stock_data)
                 # Small cool-off between stocks to respect API limits

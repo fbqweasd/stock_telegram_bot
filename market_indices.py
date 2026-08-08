@@ -519,6 +519,180 @@ def fetch_korea_market_close_data():
     return result
 
 
+def fetch_index_highs(symbol):
+    """
+    지수의 역대 최고가와 52주 최고가를 가져옵니다.
+    
+    - 역대 최고가: range=max&interval=1d (전체 기간 일봉에서 최고가)
+    - 52주 최고가: range=1y&interval=1d (1년치 일봉에서 최고가)
+    
+    반환: {
+        all_time_high: float, all_time_high_date: "YYYY-MM-DD",
+        week52_high: float, week52_high_date: "YYYY-MM-DD"
+    } 또는 None
+    """
+    encoded_symbol = urllib.parse.quote(symbol)
+
+    all_time_high = None
+    all_time_high_date = None
+    week52_high = None
+    week52_high_date = None
+
+    # ================================================================
+    # 1. 역대 최고가: range=max&interval=1d (전체 기간 일봉)
+    # ================================================================
+    url_max = (
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_symbol}"
+        f"?range=max&interval=1d&includePrePost=false"
+    )
+    response_max = _make_request(url_max)
+
+    if response_max:
+        try:
+            data = json.loads(response_max)
+            result = data.get("chart", {}).get("result", [{}])[0]
+            timestamps = result.get("timestamp", [])
+            quote = result.get("indicators", {}).get("quote", [{}])[0]
+            highs = quote.get("high", [])
+
+            # 유효한 고가 중 최대값과 해당 날짜 계산
+            best_high = None
+            best_ts = None
+            for i in range(len(timestamps)):
+                if i < len(highs) and highs[i] is not None:
+                    if best_high is None or highs[i] > best_high:
+                        best_high = highs[i]
+                        best_ts = timestamps[i]
+
+            if best_high is not None and best_ts is not None:
+                all_time_high = best_high
+                all_time_high_date = time.strftime("%Y-%m-%d", time.gmtime(best_ts))
+        except (IndexError, AttributeError, TypeError, json.JSONDecodeError):
+            pass
+
+    # ================================================================
+    # 2. 52주 최고가: range=1y&interval=1d (1년치 일봉)
+    # ================================================================
+    url_1y = (
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_symbol}"
+        f"?range=1y&interval=1d&includePrePost=false"
+    )
+    response_1y = _make_request(url_1y)
+
+    if response_1y:
+        try:
+            data = json.loads(response_1y)
+            result = data.get("chart", {}).get("result", [{}])[0]
+            timestamps = result.get("timestamp", [])
+            quote = result.get("indicators", {}).get("quote", [{}])[0]
+            highs = quote.get("high", [])
+
+            # 유효한 고가 중 최대값과 해당 날짜 계산
+            best_high = None
+            best_ts = None
+            for i in range(len(timestamps)):
+                if i < len(highs) and highs[i] is not None:
+                    if best_high is None or highs[i] > best_high:
+                        best_high = highs[i]
+                        best_ts = timestamps[i]
+
+            if best_high is not None and best_ts is not None:
+                week52_high = best_high
+                week52_high_date = time.strftime("%Y-%m-%d", time.gmtime(best_ts))
+        except (IndexError, AttributeError, TypeError, json.JSONDecodeError):
+            pass
+
+    if all_time_high is None and week52_high is None:
+        return None
+
+    return {
+        "all_time_high": all_time_high,
+        "all_time_high_date": all_time_high_date,
+        "week52_high": week52_high,
+        "week52_high_date": week52_high_date
+    }
+
+
+def fetch_all_index_highs():
+    """
+    주요 지수들의 역대 최고가와 52주 최고가를 한 번에 가져옵니다.
+    - 미국: S&P 500 (^GSPC), NASDAQ (^IXIC), DOW (^DJI)
+    - 한국: KOSPI (^KS11), KOSDAQ (^KQ11)
+    
+    반환: {
+        "sp500": {...}, "nasdaq": {...}, "dow": {...},
+        "kospi": {...}, "kosdaq": {...}
+    }
+    """
+    indices = {
+        "sp500": {"symbol": "^GSPC", "name": "S&P 500"},
+        "nasdaq": {"symbol": "^IXIC", "name": "NASDAQ"},
+        "dow": {"symbol": "^DJI", "name": "DOW"},
+        "kospi": {"symbol": "^KS11", "name": "KOSPI"},
+        "kosdaq": {"symbol": "^KQ11", "name": "KOSDAQ"}
+    }
+
+    result = {}
+
+    for key, info in indices.items():
+        highs = fetch_index_highs(info["symbol"])
+        if highs:
+            result[key] = {
+                "name": info["name"],
+                "symbol": info["symbol"],
+                **highs
+            }
+        time.sleep(0.5)  # API rate limit 준수
+
+    return result
+
+
+def check_index_high_breakouts(data, current_prices):
+    """
+    지수들이 역대 최고가 또는 52주 최고가를 돌파했는지 감지합니다.
+    
+    data: fetch_all_index_highs() 결과
+    current_prices: { key: current_price } 형태의 현재 지수 값
+    
+    반환: [(breakout_type, message), ...]
+    - breakout_type: "ALL_TIME_HIGH" 또는 "WEEK52_HIGH"
+    """
+    alerts = []
+
+    for key, info in data.items():
+        name = info.get("name", key)
+        current_price = current_prices.get(key)
+
+        if current_price is None:
+            continue
+
+        all_time_high = info.get("all_time_high")
+        all_time_high_date = info.get("all_time_high_date")
+        week52_high = info.get("week52_high")
+        week52_high_date = info.get("week52_high_date")
+
+        # 역대 최고가 돌파 체크
+        if all_time_high is not None and current_price > all_time_high:
+            pct_above = ((current_price - all_time_high) / all_time_high) * 100
+            alerts.append((
+                "ALL_TIME_HIGH",
+                f"🏆 <b>{name}</b> 역대 최고가 돌파! "
+                f"현재 <b>{current_price:,.2f}</b> (기존 최고: {all_time_high:,.2f}, "
+                f"{all_time_high_date or 'N/A'}) +{pct_above:.2f}%"
+            ))
+        # 52주 최고가 돌파 체크 (역대 최고가와 다를 때만)
+        elif week52_high is not None and current_price > week52_high:
+            pct_above = ((current_price - week52_high) / week52_high) * 100
+            alerts.append((
+                "WEEK52_HIGH",
+                f"📈 <b>{name}</b> 52주 최고가 돌파! "
+                f"현재 <b>{current_price:,.2f}</b> (기존 52주 최고: {week52_high:,.2f}, "
+                f"{week52_high_date or 'N/A'}) +{pct_above:.2f}%"
+            ))
+
+    return alerts
+
+
 def check_extreme_conditions(data):
     """
     극단적 시장 조건을 감지합니다.

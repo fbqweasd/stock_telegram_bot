@@ -377,6 +377,114 @@ def _get_weekly_data(ticker):
         return None
 
 
+def fetch_highs_data(ticker):
+    """
+    종목의 역대 최고가와 52주 최고가를 가져옵니다.
+    
+    - 역대 최고가: range=max&interval=1d (전체 기간 일봉에서 최고가)
+    - 52주 최고가: range=1y&interval=1d (1년치 일봉에서 최고가)
+    - fallback: meta.fiftyTwoWeekHigh 사용
+    
+    반환: {
+        all_time_high: float, all_time_high_date: "YYYY-MM-DD",
+        week52_high: float, week52_high_date: "YYYY-MM-DD",
+        currency: str
+    } 또는 None
+    """
+    ticker = ticker.strip().upper()
+    encoded_ticker = urllib.parse.quote(ticker)
+
+    all_time_high = None
+    all_time_high_date = None
+    week52_high = None
+    week52_high_date = None
+    currency = None
+
+    # ================================================================
+    # 1. 역대 최고가: range=max&interval=1d (전체 기간 일봉)
+    # ================================================================
+    url_max = (
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}"
+        f"?range=max&interval=1d&includePrePost=false"
+    )
+    data_max = _make_request(url_max)
+
+    if data_max:
+        try:
+            result = data_max.get("chart", {}).get("result", [{}])[0]
+            meta = result.get("meta", {})
+            currency = meta.get("currency", "USD")
+
+            timestamps = result.get("timestamp", [])
+            quote = result.get("indicators", {}).get("quote", [{}])[0]
+            highs = quote.get("high", [])
+
+            # 유효한 고가 중 최대값과 해당 날짜 계산
+            best_high = None
+            best_ts = None
+            for i in range(len(timestamps)):
+                if i < len(highs) and highs[i] is not None:
+                    if best_high is None or highs[i] > best_high:
+                        best_high = highs[i]
+                        best_ts = timestamps[i]
+
+            if best_high is not None and best_ts is not None:
+                all_time_high = best_high
+                all_time_high_date = time.strftime("%Y-%m-%d", time.gmtime(best_ts))
+        except (IndexError, AttributeError, TypeError):
+            pass
+
+    # ================================================================
+    # 2. 52주 최고가: range=1y&interval=1d (1년치 일봉)
+    # ================================================================
+    url_1y = (
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}"
+        f"?range=1y&interval=1d&includePrePost=false"
+    )
+    data_1y = _make_request(url_1y)
+
+    if data_1y:
+        try:
+            result = data_1y.get("chart", {}).get("result", [{}])[0]
+            meta = result.get("meta", {})
+
+            if currency is None:
+                currency = meta.get("currency", "USD")
+
+            timestamps = result.get("timestamp", [])
+            quote = result.get("indicators", {}).get("quote", [{}])[0]
+            highs = quote.get("high", [])
+
+            # 유효한 고가 중 최대값과 해당 날짜 계산
+            best_high = None
+            best_ts = None
+            for i in range(len(timestamps)):
+                if i < len(highs) and highs[i] is not None:
+                    if best_high is None or highs[i] > best_high:
+                        best_high = highs[i]
+                        best_ts = timestamps[i]
+
+            if best_high is not None and best_ts is not None:
+                week52_high = best_high
+                week52_high_date = time.strftime("%Y-%m-%d", time.gmtime(best_ts))
+            else:
+                # fallback: meta.fiftyTwoWeekHigh
+                week52_high = meta.get("fiftyTwoWeekHigh")
+        except (IndexError, AttributeError, TypeError):
+            pass
+
+    if all_time_high is None and week52_high is None:
+        return None
+
+    return {
+        "all_time_high": all_time_high,
+        "all_time_high_date": all_time_high_date,
+        "week52_high": week52_high,
+        "week52_high_date": week52_high_date,
+        "currency": currency or "USD"
+    }
+
+
 def fetch_stock_name(ticker):
     """
     Yahoo Finance에서 종목명(회사명)을 가져옵니다.
