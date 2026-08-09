@@ -170,6 +170,42 @@ def calculate_momentum(prices, period=10):
     return momentum
 
 
+def calculate_atr(highs, lows, closes, period=14):
+    """
+    Calculates Average True Range (ATR) using Wilder's Smoothing.
+    ATR measures market volatility - essential for stop-loss/target price setting.
+    Returns a list of ATR values. First 'period' elements will be None.
+    """
+    if len(closes) < period + 1:
+        return [None] * len(closes)
+    
+    atr = [None] * len(closes)
+    
+    # True Range = max(high-low, |high-prev_close|, |low-prev_close|)
+    true_ranges = []
+    for i in range(1, len(closes)):
+        tr = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1])
+        )
+        true_ranges.append(tr)
+    
+    # First ATR = SMA of first 'period' true ranges
+    if len(true_ranges) < period:
+        return [None] * len(closes)
+    
+    atr_value = sum(true_ranges[:period]) / period
+    atr[period] = atr_value
+    
+    # Wilder's Smoothing
+    for i in range(period, len(true_ranges)):
+        atr_value = (atr_value * (period - 1) + true_ranges[i]) / period
+        atr[i + 1] = atr_value
+    
+    return atr
+
+
 def calculate_volume_trend(volumes, period=20):
     """
     Analyzes volume trend. Returns the average volume ratio.
@@ -191,21 +227,162 @@ def calculate_volume_trend(volumes, period=20):
     return avg_recent / avg_historical
 
 
-def find_support_resistance(highs, lows, period=20):
+def find_support_resistance(highs, lows, closes, period=20, min_touch=2):
     """
-    Finds local support and resistance levels based on recent high/low price points.
-    Returns (support_level, resistance_level).
-    - Support is calculated as the minimum low price over the period.
-    - Resistance is calculated as the maximum high price over the period.
+    Finds support and resistance levels using pivot point detection.
+    Unlike simple min/max, this identifies price levels that have been
+    tested (touched) multiple times, making them more reliable.
+
+    Returns (support_level, resistance_level) or (None, None).
+    
+    - Uses fractal pivots: a high is a pivot if it's the highest of the
+      surrounding 'window' bars; a low is a pivot if it's the lowest.
+    - Support = strongest pivot low (most touches weighted by recency)
+    - Resistance = strongest pivot high (most touches weighted by recency)
     """
     if len(highs) < period or len(lows) < period:
         return None, None
-        
-    # Get the slice of recent prices
+    
+    # Look back window
+    window = min(period, len(highs) - 1)
+    pivot_window = 2  # bars on each side to confirm a pivot
+    
+    pivot_highs = []
+    pivot_lows = []
+    
+    # Detect local pivots (fractals)
+    for i in range(pivot_window, len(highs) - pivot_window):
+        is_high = True
+        is_low = True
+        for j in range(1, pivot_window + 1):
+            if highs[i] <= highs[i - j] or highs[i] <= highs[i + j]:
+                is_high = False
+            if lows[i] >= lows[i - j] or lows[i] >= lows[i + j]:
+                is_low = False
+        if is_high:
+            pivot_highs.append((i, highs[i]))
+        if is_low:
+            pivot_lows.append((i, lows[i]))
+    
+    if not pivot_highs and not pivot_lows:
+        # Fallback to simple min/max
+        recent_highs = highs[-period:]
+        recent_lows = lows[-period:]
+        return min(recent_lows), max(recent_highs)
+    
+    # Score each pivot by how many times price returned to that level (touches)
+    def _score_level(level, prices, tolerance_pct=0.01):
+        """Count how many times price came within tolerance_pct of the level."""
+        touches = 0
+        tolerance = level * tolerance_pct
+        for p in prices:
+            if abs(p - level) <= tolerance:
+                touches += 1
+        return touches
+    
+    # Consider only pivots within the lookback window
+    start_idx = max(0, len(highs) - window * 3)  # look back 3x period for pivots
+    
+    # Score and pick strongest support (pivot low)
+    best_support = None
+    best_support_score = -1
+    for idx, level in pivot_lows:
+        if idx < start_idx:
+            continue
+        # Recency + touch count weighting
+        recency_weight = (idx - start_idx + 1) / (len(highs) - start_idx + 1)
+        touch_score = _score_level(level, lows[idx:])
+        total = touch_score + recency_weight * 2
+        if total > best_support_score:
+            best_support_score = total
+            best_support = level
+    
+    # Score and pick strongest resistance (pivot high)
+    best_resistance = None
+    best_resistance_score = -1
+    for idx, level in pivot_highs:
+        if idx < start_idx:
+            continue
+        recency_weight = (idx - start_idx + 1) / (len(highs) - start_idx + 1)
+        touch_score = _score_level(level, highs[idx:])
+        total = touch_score + recency_weight * 2
+        if total > best_resistance_score:
+            best_resistance_score = total
+            best_resistance = level
+    
+    # Ensure support < resistance; if inverted, fallback to min/max
+    if best_support is not None and best_resistance is not None:
+        if best_support < best_resistance:
+            return best_support, best_resistance
+    
+    # Fallback
     recent_highs = highs[-period:]
     recent_lows = lows[-period:]
+    return min(recent_lows), max(recent_highs)
+
+
+def detect_market_regime(closes, sma_20, sma_50, period=20):
+    """
+    Detects the current market regime (trending vs ranging).
     
-    resistance = max(recent_highs)
-    support = min(recent_lows)
+    Returns a string: 'TRENDING_UP', 'TRENDING_DOWN', or 'RANGING'.
     
-    return support, resistance
+    Method: Uses the ADX-like concept - when the price moves strongly
+    in one direction relative to the moving average spread, it's trending.
+    When the spread oscillates without direction, it's ranging.
+    """
+    if len(closes) < period * 2:
+        return 'RANGING'
+    
+    # Get valid SMA values
+    valid_sma20 = [v for v in sma_20 if v is not None]
+    valid_sma50 = [v for v in sma_50 if v is not None]
+    if len(valid_sma20) < period or len(valid_sma50) < period:
+        return 'RANGING'
+    
+    # Directional movement: percentage of closes above/below SMA50
+    sma50 = sma_50
+    
+    # Use last 'period' bars for regime detection
+    lookback = closes[-period:]
+    sma50_recent = sma50[-period:]
+    
+    above_count = 0
+    below_count = 0
+    valid_pairs = 0
+    
+    for c, s in zip(lookback, sma50_recent):
+        if s is None:
+            continue
+        valid_pairs += 1
+        if c > s:
+            above_count += 1
+        elif c < s:
+            below_count += 1
+    
+    if valid_pairs == 0:
+        return 'RANGING'
+    
+    above_pct = above_count / valid_pairs
+    below_pct = below_count / valid_pairs
+    
+    # Slope of SMA20 (trend strength)
+    valid_indices = [i for i, v in enumerate(sma_20) if v is not None]
+    if len(valid_indices) >= 10:
+        recent_sma20 = [sma_20[i] for i in valid_indices[-10:]]
+        if len(recent_sma20) >= 10:
+            slope = (recent_sma20[-1] - recent_sma20[0]) / recent_sma20[0] * 100
+        else:
+            slope = 0
+    else:
+        slope = 0
+    
+    # Regime classification
+    # Strong trend: >70% of bars on one side of SMA50 with meaningful slope
+    # Weak/range: mixed positioning or flat slope
+    if above_pct >= 0.7 and slope > 0.5:
+        return 'TRENDING_UP'
+    elif below_pct >= 0.7 and slope < -0.5:
+        return 'TRENDING_DOWN'
+    else:
+        return 'RANGING'

@@ -629,7 +629,7 @@ class TelegramBot:
             f"<i>(현재가 대비 {sell_premium:.1f}% 상승 시 매도 기회)</i>\n"
             f"<i>산출 기준: 볼린저 상단(60%) + 저항선(40%)</i>\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
-            f"<b>🔍 판단 근거 (9개 지표 분석)</b>\n"
+            f"<b>🔍 판단 근거 (6개 지표 분석)</b>\n"
         )
         
         # 신호 설명 추가 (최대 5개)
@@ -905,7 +905,7 @@ class TelegramBot:
             f"<i>(현재가 대비 {sell_premium:.1f}% 상승 시 매도 기회)</i>\n"
             f"<i>산출 기준: {candle_desc} 볼린저 상단(60%) + 저항선(40%)</i>\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
-            f"<b>🔍 판단 근거 (9개 지표, {candle_desc} 기준)</b>\n"
+            f"<b>🔍 판단 근거 (6개 지표, {candle_desc} 기준)</b>\n"
         )
         
         # 신호 설명 추가 (최대 5개)
@@ -943,23 +943,11 @@ class TelegramBot:
         # SMA 상태 설명
         sma20 = indicators['sma_20']
         sma50 = indicators['sma_50']
-        sma60 = indicators.get('sma_60', 0)
-        sma120 = indicators.get('sma_120', 0)
         sma_status = ""
         if sma20 > sma50:
             sma_status = "골든크로스 (상승 추세)"
         else:
             sma_status = "데드크로스 (하락 추세)"
-        
-        # SMA 60 vs 120 상태 설명 (중장기 추세)
-        sma_long_status = ""
-        if sma60 > 0 and sma120 > 0:
-            if sma60 > sma120:
-                sma_long_status = "SMA60이 SMA120 위 (중장기 우상향)"
-            else:
-                sma_long_status = "SMA60이 SMA120 아래 (중장기 우하향)"
-        else:
-            sma_long_status = "데이터 부족"
         
         # 볼린저 밴드 위치 설명
         bb_lower = indicators['bb_lower']
@@ -973,27 +961,41 @@ class TelegramBot:
         else:
             bb_status = "중앙 (안정적)"
         
+        # 시장 국면 표시
+        market_regime = analysis.get("market_regime", "RANGING")
+        regime_label = {
+            "TRENDING_UP": "상승 추세장 📈",
+            "TRENDING_DOWN": "하락 추세장 📉",
+            "RANGING": "횡보장 ↔️"
+        }.get(market_regime, "횡보장 ↔️")
+        
+        # ATR/손절가 표시
+        atr_val = indicators.get('atr', 0)
+        atr_pct = indicators.get('atr_pct', 0)
+        stop_loss = analysis.get('stop_loss', 0)
+        
         # 지표 요약 추가
         report_text += (
             f"\n<b>📈 주요 보조지표 ({candle_desc} 기준)</b>\n"
+            f"• <b>시장 국면:</b> {regime_label}\n"
             f"• <b>{rsi_desc}:</b> {rsi_val:.1f} → {rsi_status}\n"
             f"• <b>MACD:</b> {macd_val:.4f} / Histogram: {macd_hist:.4f} → {macd_status}\n"
-            f"• <b>모멘텀(10):</b> {indicators['momentum']:.2f}%\n"
             f"• <b>{bb_desc}:</b> {bb_lower:.2f} ~ {bb_upper:.2f} {currency}\n"
             f"  현재 위치: 밴드 {bb_position:.0f}% → {bb_status}\n"
             f"• <b>{sma_desc}:</b> {sma20:.2f} vs {sma50:.2f} → {sma_status}\n"
         )
         
-        # SMA 60/120 표시 (데이터 충분할 때만)
-        if sma60 > 0 and sma120 > 0:
-            report_text += (
-                f"• <b>60/120선:</b> {sma60:.2f} vs {sma120:.2f} → {sma_long_status}\n"
-            )
-        
         report_text += (
             f"• <b>{sr_desc}:</b> {indicators['support']:.2f} / {indicators['resistance']:.2f} {currency}\n"
             f"• <b>거래량 동향:</b> {indicators['volume_ratio']:.2f}x\n"
+            f"• <b>ATR (변동성):</b> {atr_val:.2f} ({atr_pct:.1f}%)\n"
         )
+        
+        # 손절가 표시
+        if stop_loss > 0:
+            report_text += (
+                f"🛑 <b>손절가:</b> <code>{stop_loss:.2f} {currency}</code> (ATR 1.5배 기준)\n"
+            )
         
         return report_text
 
