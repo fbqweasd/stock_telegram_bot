@@ -141,10 +141,11 @@ def _get_daily_data(ticker):
     일봉 데이터를 가져옵니다 (기술적 지표 계산용 + 전일종가).
     includePrePost=false로 요청하여 정확한 일봉 데이터를 얻습니다.
     (includePrePost=true는 하루에 여러 캔들(프리/정규/애프터)이 생겨 전일 종가 계산이 왜곡될 수 있음)
+    range=1y (약 250 캔들)로 요청하여 20/60/120일 이동평균선 계산에 충분한 데이터를 확보합니다.
     반환: { closes, highs, lows, opens, volumes, timestamps, currency, previous_close }
     """
     encoded_ticker = urllib.parse.quote(ticker)
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=60d&interval=1d&includePrePost=false"
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=1y&interval=1d&includePrePost=false"
     
     data = _make_request(url)
     if not data:

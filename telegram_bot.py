@@ -287,7 +287,7 @@ class TelegramBot:
         welcome_text = (
             "<b>📈 주식 모니터링 & 알림 봇에 오신 것을 환영합니다!</b>\n\n"
             "이 봇은 등록하신 관심 주식을 주기적으로 모니터링하여 "
-            "<b>20일선 이탈, 볼린저 밴드 하단 돌파, RSI 과매수/과매도</b> 등 "
+            "<b>20일선/60일선/120일선 이탈, 볼린저 밴드 하단 돌파, RSI 과매수/과매도</b> 등 "
             "주요 기술적 이벤트 발생 시 자동으로 알림을 전송해 줍니다.\n\n"
             "또한, 순수 기술적 지표들을 종합 분석하여 최적의 매수/매도 가격과 "
             "매매 추천 정보를 언제든지 바로 예측해서 제공합니다.\n\n"
@@ -324,6 +324,10 @@ class TelegramBot:
             "등록된 종목이 전일 종가 대비 <b>5%, 10%, 20%</b> 이상 변동하면 자동으로 알림을 보내드립니다.\n"
             "동일한 변동폭(임계값)과 방향(상승/하락) 조합은 하루에 1번만 알림이 전송됩니다.\n"
             "예: 5% 상승 알림 후 10% 상승 또는 5% 하락 시에는 새로 알림을 보내드립니다.\n\n"
+            "📉 <b>이동평균선 이탈/회복 알림</b>\n"
+            "등록된 종목이 <b>20일선, 60일선, 120일선</b>을 이탈하거나 다시 회복하면 자동으로 알림을 보내드립니다.\n"
+            "각 이평선은 서로 다른 주기(단기/중기/장기)의 추세 전환 신호로 활용됩니다.\n"
+            "동일한 이평선 알림은 상태가 바뀔 때(이탈→회복 또는 회복→이탈)마다 전송됩니다.\n\n"
             "🇺🇸 <b>미국장 마감 요약 (매일 5~6시)</b>\n"
             "매일 미국장이 끝난 후 (한국 시간 오전 5~6시 경) 당일 시장 흐름을 요약하여 자동으로 전송합니다.\n"
             "공포탐욕지수, VIX, 주요 지수, 환율 등을 확인하고 하루를 마무리하세요!\n\n"
@@ -625,7 +629,7 @@ class TelegramBot:
             f"<i>(현재가 대비 {sell_premium:.1f}% 상승 시 매도 기회)</i>\n"
             f"<i>산출 기준: 볼린저 상단(60%) + 저항선(40%)</i>\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
-            f"<b>🔍 판단 근거 (8개 지표 분석)</b>\n"
+            f"<b>🔍 판단 근거 (9개 지표 분석)</b>\n"
         )
         
         # 신호 설명 추가 (최대 5개)
@@ -901,7 +905,7 @@ class TelegramBot:
             f"<i>(현재가 대비 {sell_premium:.1f}% 상승 시 매도 기회)</i>\n"
             f"<i>산출 기준: {candle_desc} 볼린저 상단(60%) + 저항선(40%)</i>\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
-            f"<b>🔍 판단 근거 (8개 지표, {candle_desc} 기준)</b>\n"
+            f"<b>🔍 판단 근거 (9개 지표, {candle_desc} 기준)</b>\n"
         )
         
         # 신호 설명 추가 (최대 5개)
@@ -939,11 +943,23 @@ class TelegramBot:
         # SMA 상태 설명
         sma20 = indicators['sma_20']
         sma50 = indicators['sma_50']
+        sma60 = indicators.get('sma_60', 0)
+        sma120 = indicators.get('sma_120', 0)
         sma_status = ""
         if sma20 > sma50:
             sma_status = "골든크로스 (상승 추세)"
         else:
             sma_status = "데드크로스 (하락 추세)"
+        
+        # SMA 60 vs 120 상태 설명 (중장기 추세)
+        sma_long_status = ""
+        if sma60 > 0 and sma120 > 0:
+            if sma60 > sma120:
+                sma_long_status = "SMA60이 SMA120 위 (중장기 우상향)"
+            else:
+                sma_long_status = "SMA60이 SMA120 아래 (중장기 우하향)"
+        else:
+            sma_long_status = "데이터 부족"
         
         # 볼린저 밴드 위치 설명
         bb_lower = indicators['bb_lower']
@@ -966,6 +982,15 @@ class TelegramBot:
             f"• <b>{bb_desc}:</b> {bb_lower:.2f} ~ {bb_upper:.2f} {currency}\n"
             f"  현재 위치: 밴드 {bb_position:.0f}% → {bb_status}\n"
             f"• <b>{sma_desc}:</b> {sma20:.2f} vs {sma50:.2f} → {sma_status}\n"
+        )
+        
+        # SMA 60/120 표시 (데이터 충분할 때만)
+        if sma60 > 0 and sma120 > 0:
+            report_text += (
+                f"• <b>60/120선:</b> {sma60:.2f} vs {sma120:.2f} → {sma_long_status}\n"
+            )
+        
+        report_text += (
             f"• <b>{sr_desc}:</b> {indicators['support']:.2f} / {indicators['resistance']:.2f} {currency}\n"
             f"• <b>거래량 동향:</b> {indicators['volume_ratio']:.2f}x\n"
         )

@@ -9,12 +9,13 @@ def predict_buy_sell_prices(stock_data):
     Analyzes historical stock data with multiple technical indicators
     and uses rule-based scoring to estimate the best recommendation.
     
-    Indicators used (8 types):
+    Indicators used (9 types):
     - RSI (14)          : 과매수/과매도
     - MACD (12,26,9)    : 추세 전환
     - Momentum (10)     : 모멘텀
     - Bollinger Bands(20): 밴드 위치
-    - SMA 20 vs 50     : 골든크로스/데드크로스
+    - SMA 20 vs 50     : 단기 골든크로스/데드크로스
+    - SMA 60 vs 120    : 중장기 골든크로스/데드크로스
     - EMA 12 vs 26     : 단기 추세
     - Volume Trend      : 거래량 동향
     - Support/Resistance: 지지/저항
@@ -39,6 +40,8 @@ def predict_buy_sell_prices(stock_data):
     momentum_list = calculate_momentum(closes, period=10)
     sma_20 = calculate_sma(closes, period=20)
     sma_50 = calculate_sma(closes, period=50)
+    sma_60 = calculate_sma(closes, period=60)
+    sma_120 = calculate_sma(closes, period=120)
     ema_12 = calculate_ema(closes, period=12)
     ema_26 = calculate_ema(closes, period=26)
     support, resistance = find_support_resistance(highs, lows, period=20)
@@ -61,6 +64,8 @@ def predict_buy_sell_prices(stock_data):
     momentum = _last_valid(momentum_list)
     sma20_val = _last_valid(sma_20)
     sma50_val = _last_valid(sma_50, sma20_val)
+    sma60_val = _last_valid(sma_60, sma50_val)
+    sma120_val = _last_valid(sma_120, sma60_val)
     ema12_val = _last_valid(ema_12)
     ema26_val = _last_valid(ema_26)
     
@@ -190,6 +195,24 @@ def predict_buy_sell_prices(stock_data):
         else:
             score += 0.0
     
+    # 5b. SMA 60 vs 120 (중장기 골든크로스/데드크로스) (가중치 1.0)
+    if sma60_val is not None and sma120_val is not None:
+        prev_close = closes[-2] if len(closes) >= 2 else current_price
+        if sma60_val > sma120_val and prev_close <= sma120_val and current_price > sma120_val:
+            score += 1.0
+            signals.append("중장기 골든크로스! (SMA60이 SMA120 상향 돌파)")
+        elif sma60_val > sma120_val:
+            score += 0.5
+            signals.append("SMA60이 SMA120 위 (중장기 우상향 추세)")
+        elif sma60_val < sma120_val and prev_close >= sma120_val and current_price < sma120_val:
+            score -= 1.0
+            signals.append("중장기 데드크로스! (SMA60이 SMA120 하향 돌파)")
+        elif sma60_val < sma120_val:
+            score -= 0.5
+            signals.append("SMA60이 SMA120 아래 (중장기 우하향 추세)")
+        else:
+            score += 0.0
+    
     # 6. EMA 12 vs 26 (단기 추세) (가중치 1.0)
     if ema12_val is not None and ema26_val is not None:
         if ema12_val > ema26_val:
@@ -235,8 +258,8 @@ def predict_buy_sell_prices(stock_data):
     # ============================================================
     # FINAL RECOMMENDATION
     # ============================================================
-    # 최대 점수: RSI(2.0) + MACD(2.0) + Momentum(1.5) + BB(1.5) + SMA(1.5) + EMA(1.0) + Volume(1.0) + S/R(1.0) = 11.5
-    # 최소 점수: -11.5
+    # 최대 점수: RSI(2.0) + MACD(2.0) + Momentum(1.5) + BB(1.5) + SMA20/50(1.5) + SMA60/120(1.0) + EMA(1.0) + Volume(1.0) + S/R(1.0) = 12.5
+    # 최소 점수: -12.5
     # 기준: score > 3 = BUY, score < -3 = SELL, 그외 HOLD
     
     recommendation = "HOLD"
@@ -291,7 +314,7 @@ def predict_buy_sell_prices(stock_data):
         "recommendation": recommendation,
         "confidence": confidence,
         "score": round(score, 2),
-        "signals": signals[:5],  # 최대 5개 신호 표시
+        "signals": signals[:7],  # 최대 7개 신호 표시
         "indicators": {
             "rsi": round(rsi, 2),
             "macd": round(macd_val, 4),
@@ -302,6 +325,8 @@ def predict_buy_sell_prices(stock_data):
             "bb_lower": round(bb_lower, 2),
             "sma_20": round(sma20_val, 2) if sma20_val else 0,
             "sma_50": round(sma50_val, 2) if sma50_val else 0,
+            "sma_60": round(sma60_val, 2) if sma60_val else 0,
+            "sma_120": round(sma120_val, 2) if sma120_val else 0,
             "ema_12": round(ema12_val, 2) if ema12_val else 0,
             "ema_26": round(ema26_val, 2) if ema26_val else 0,
             "support": round(support, 2),
@@ -321,15 +346,16 @@ def predict_buy_sell_prices(stock_data):
 
 if __name__ == "__main__":
     # Small local test - downtrend (should be SELL)
+    # 130개 데이터로 120일 이평선까지 계산 가능
     mock_data = {
         "ticker": "TSLA",
         "currency": "USD",
         "current_price": 175.0,
-        "closes": [180 - i*0.5 for i in range(30)],
-        "highs": [182 - i*0.5 for i in range(30)],
-        "lows": [178 - i*0.5 for i in range(30)],
-        "opens": [181 - i*0.5 for i in range(30)],
-        "volumes": [100000 + i*1000 for i in range(30)]
+        "closes": [180 - i*0.5 for i in range(130)],
+        "highs": [182 - i*0.5 for i in range(130)],
+        "lows": [178 - i*0.5 for i in range(130)],
+        "opens": [181 - i*0.5 for i in range(130)],
+        "volumes": [100000 + i*1000 for i in range(130)]
     }
     
     result = predict_buy_sell_prices(mock_data)

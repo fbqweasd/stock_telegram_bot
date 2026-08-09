@@ -539,12 +539,15 @@ class AlertScheduler:
         self._check_price_change_alerts(ticker, current_price, currency, subscribers, stock_data)
 
         # Basic validation for technical indicators
-        if len(closes) < 21:
-            return
+        # 121개 이상 필요: 120일 이평선 계산 가능
+        # 그보다 적으면 60일/120일 이평선 알림은 건너뛰고 20일선 알림만 처리
+        has_long_sma_data = len(closes) >= 121
 
         # Calculate indicators
         upper_bands, middle_bands, lower_bands = indicators.calculate_bollinger_bands(closes, period=20)
         rsi_list = indicators.calculate_rsi(closes, period=14)
+        sma_60_list = indicators.calculate_sma(closes, period=60) if has_long_sma_data else None
+        sma_120_list = indicators.calculate_sma(closes, period=120) if has_long_sma_data else None
 
         # Get latest and previous data points
         price_now = current_price
@@ -555,6 +558,12 @@ class AlertScheduler:
 
         rsi_now = rsi_list[-1]
         rsi_prev = rsi_list[-2]
+
+        # 60일/120일 이평선 최신값 (데이터 충분할 때만)
+        sma60_now = sma_60_list[-1] if sma_60_list else None
+        sma60_prev = sma_60_list[-2] if sma_60_list and len(sma_60_list) >= 2 else None
+        sma120_now = sma_120_list[-1] if sma_120_list else None
+        sma120_prev = sma_120_list[-2] if sma_120_list and len(sma_120_list) >= 2 else None
 
         # Verify no calculated values are None
         if None in (bb_upper_now, bb_middle_now, bb_lower_now, bb_upper_prev, bb_middle_prev, bb_lower_prev, rsi_now, rsi_prev):
@@ -623,6 +632,50 @@ class AlertScheduler:
             }
         elif rsi_now < 70:
             self._clear_event_for_all(subscribers, ticker, "RSI_OVERBOUGHT")
+
+        # 7. SMA 60 Cross Under (60일 이평선 이탈 - 중기 하락 신호)
+        if sma60_now is not None and sma60_prev is not None:
+            if price_prev >= sma60_prev and price_now < sma60_now:
+                events["SMA_60_CROSS_UNDER"] = {
+                    "title": "📉 60일 이동평균선 이탈 (중기 추세 약화)",
+                    "msg": f"현재가(<b>{price_now:.2f} {currency}</b>)가 60일선(<b>{sma60_now:.2f}</b>)을 아래로 뚫고 내려왔습니다. 중기 지지선 이탈로 추세가 약화될 수 있습니다.",
+                    "type": "SMA_60_UNDER"
+                }
+            elif price_now >= sma60_now:
+                self._clear_event_for_all(subscribers, ticker, "SMA_60_UNDER")
+
+        # 8. SMA 60 Cross Over (60일 이평선 회복 - 중기 상승 신호)
+        if sma60_now is not None and sma60_prev is not None:
+            if price_prev <= sma60_prev and price_now > sma60_now:
+                events["SMA_60_CROSS_OVER"] = {
+                    "title": "📈 60일 이동평균선 회복 (중기 추세 강화)",
+                    "msg": f"현재가(<b>{price_now:.2f} {currency}</b>)가 60일선(<b>{sma60_now:.2f}</b>) 위로 올라섰습니다. 중기 상승 추세로 전환될 수 있습니다.",
+                    "type": "SMA_60_OVER"
+                }
+            elif price_now <= sma60_now:
+                self._clear_event_for_all(subscribers, ticker, "SMA_60_OVER")
+
+        # 9. SMA 120 Cross Under (120일 이평선 이탈 - 장기 하락 신호)
+        if sma120_now is not None and sma120_prev is not None:
+            if price_prev >= sma120_prev and price_now < sma120_now:
+                events["SMA_120_CROSS_UNDER"] = {
+                    "title": "📉 120일 이동평균선 이탈 (장기 추세 약화)",
+                    "msg": f"현재가(<b>{price_now:.2f} {currency}</b>)가 120일선(<b>{sma120_now:.2f}</b>)을 아래로 뚫고 내려왔습니다. 장기 지지선 이탈로 큰 조정이 올 수 있습니다.",
+                    "type": "SMA_120_UNDER"
+                }
+            elif price_now >= sma120_now:
+                self._clear_event_for_all(subscribers, ticker, "SMA_120_UNDER")
+
+        # 10. SMA 120 Cross Over (120일 이평선 회복 - 장기 상승 신호)
+        if sma120_now is not None and sma120_prev is not None:
+            if price_prev <= sma120_prev and price_now > sma120_now:
+                events["SMA_120_CROSS_OVER"] = {
+                    "title": "📈 120일 이동평균선 회복 (장기 추세 강화)",
+                    "msg": f"현재가(<b>{price_now:.2f} {currency}</b>)가 120일선(<b>{sma120_now:.2f}</b>) 위로 올라섰습니다. 장기 상승 추세로 전환될 수 있습니다.",
+                    "type": "SMA_120_OVER"
+                }
+            elif price_now <= sma120_now:
+                self._clear_event_for_all(subscribers, ticker, "SMA_120_OVER")
 
         # Process and dispatch each triggered event to users
         stock_name = stock_data.get("name", ticker)
