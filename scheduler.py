@@ -315,9 +315,17 @@ class AlertScheduler:
         주요 지수(S&P 500, NASDAQ, DOW, KOSPI, KOSDAQ)의
         역대 최고가 또는 52주 최고가 돌파를 감지하고 알림을 전송합니다.
         동일한 (지수, 유형) 조합은 하루에 1번만 알림을 전송합니다.
+        휴장일(주말/공휴일)에는 실시간 조회를 하지 않습니다.
         """
         # 구독자가 없으면 스킵
         if not database.get_all_subscriptions():
+            return
+
+        # 휴장일(주말/공휴일)에는 실시간 조회를 하지 않음
+        now_kst = market_calendar.get_korea_now()
+        now_et = market_calendar.get_us_eastern_now()
+        if not market_calendar.is_korea_trading_day(now_kst) and not market_calendar.is_us_trading_day(now_et):
+            print("📅 오늘은 한국/미국 시장 모두 휴장일입니다. 지수 최고치 조회를 건너뜁니다.")
             return
 
         # 오늘 날짜 (KST 기준)
@@ -467,9 +475,22 @@ class AlertScheduler:
         except Exception as e:
             print(f"Error checking high breakouts for {ticker}: {e}")
 
+    def _is_ticker_trading_day(self, ticker):
+        """
+        티커가 한국 주식(.KS/.KQ)인지 미국 주식인지 판별하여
+        해당 시장의 거래일(휴장일 아님)인지 확인합니다.
+        """
+        ticker_upper = ticker.upper()
+        if ticker_upper.endswith(".KS") or ticker_upper.endswith(".KQ"):
+            # 한국 주식 → 한국 시장 거래일 확인
+            return market_calendar.is_korea_trading_day()
+        # 미국 주식 (기본) → 미국 시장 거래일 확인
+        return market_calendar.is_us_trading_day()
+
     def _check_all_subscribed_stocks(self):
         """
         Gathers unique tickers, processes indicators, and sends alerts if events trigger.
+        휴장일(주말/공휴일)에는 실시간 조회를 하지 않습니다.
         """
         # Get all tickers subscribed by at least one user
         tickers = database.get_unique_tickers()
@@ -479,6 +500,11 @@ class AlertScheduler:
 
         for ticker in tickers:
             try:
+                # 휴장일 체크: 해당 종목의 시장이 휴장이면 실시간 조회를 건너뜀
+                if not self._is_ticker_trading_day(ticker):
+                    print(f"📅 {ticker} 시장이 휴장일입니다. 실시간 조회를 건너뜁니다.")
+                    continue
+
                 stock_data = stock_api.fetch_stock_data(ticker)
                 if not stock_data:
                     print(f"Skipping {ticker} scan - could not retrieve stock data.")
