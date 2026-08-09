@@ -106,40 +106,6 @@ stock_bot/
 │   └── stock_bot.db              #   SQLite 데이터베이스 파일
 │
 │  # =========================================
-│  # 📊 백테스트 결과
-│  # =========================================
-├── results/                      # (Git 제외) 1차 백테스트 결과 (12개 종목)
-│   ├── AAPL_backtest.json        #   종목별 예측 정확도/매매 성과 JSON
-│   ├── AMZN_backtest.json
-│   ├── DIS_backtest.json
-│   ├── GOOGL_backtest.json
-│   ├── JNJ_backtest.json
-│   ├── JPM_backtest.json
-│   ├── KO_backtest.json
-│   ├── META_backtest.json
-│   ├── MSFT_backtest.json
-│   ├── NVDA_backtest.json
-│   ├── TSLA_backtest.json
-│   ├── XOM_backtest.json
-│   ├── strong_alert_backtest_results.json  # STRONG 신호 전략 통합 결과
-│   ├── summary_analysis.py       #   12개 종목 결과 종합 분석 스크립트
-│   └── compare_analysis.py       #   개선 전(이 디렉토리) vs 후(results_v2) 비교 스크립트
-│
-├── results_v2/                   # (Git 제외) 2차 백테스트 결과 (예측 로직 대규모 개선 후)
-│   ├── AAPL_backtest.json
-│   ├── AMZN_backtest.json
-│   ├── DIS_backtest.json
-│   ├── GOOGL_backtest.json
-│   ├── JNJ_backtest.json
-│   ├── JPM_backtest.json
-│   ├── KO_backtest.json
-│   ├── META_backtest.json
-│   ├── MSFT_backtest.json
-│   ├── NVDA_backtest.json
-│   ├── TSLA_backtest.json
-│   └── XOM_backtest.json
-│
-│  # =========================================
 │  # ✅ 단위 테스트
 │  # =========================================
 └── tests/                        # python -m unittest discover -s tests -v
