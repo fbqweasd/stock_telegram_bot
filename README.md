@@ -127,6 +127,63 @@ volumes:
 
 ---
 
+## 🔬 백테스트 (예측 정확도 검증)
+
+실제 `predict_buy_sell_prices` 로직을 그대로 사용하여 과거 데이터 기반 예측 정확도를 검증할 수 있습니다.
+
+### 사용법
+
+```bash
+# 기본 실행 (AAPL, 5년, 5일 후 비교)
+python backtest.py --ticker AAPL
+
+# 기간/비교일/간격 설정
+python backtest.py --ticker 005930.KS --years 3 --horizon 10 --step 2
+
+# 초기 자본 설정
+python backtest.py --ticker TSLA --years 5 --horizon 5 --capital 50000
+
+# JSON 형식으로 결과 출력
+python backtest.py --ticker AAPL --years 2 --json
+
+# 결과를 JSON 파일로 저장
+python backtest.py --ticker AAPL --years 2 --output results/aapl_backtest.json
+```
+
+### 주요 옵션
+
+| 옵션 | 설명 | 기본값 |
+|------|------|--------|
+| `--ticker, -t` | 종목 티커 (필수) | - |
+| `--years, -y` | 백테스트 기간 (년) | 5 |
+| `--horizon, -H` | 예측 후 며칠 뒤 가격과 비교할지 | 5 |
+| `--step, -s` | 몇 일 간격으로 예측을 실행할지 | 1 |
+| `--capital, -c` | 초기 자본 | 10000 |
+| `--json` | JSON 형식으로 결과 출력 | - |
+| `--output, -o` | 결과를 JSON 파일로 저장 | - |
+
+### 백테스트 원리
+
+1. **과거 데이터만 사용** (Look-ahead bias 방지): 각 시점에서 그 시점까지의 과거 데이터만으로 예측
+2. **실제 예측 로직 그대로 사용**: `predict_buy_sell_prices` 함수를 직접 호출
+3. **정확도 평가**: 예측 결과(매수/매도/홀드)와 이후 실제 가격 변동 비교
+4. **매매 시뮬레이션**: 매수/매도 신호에 따른 실제 수익률 계산
+
+### 출력 지표
+
+- **예측 정확도**: 전체/추천별/방향별/신뢰도 구간별 정확도
+- **매매 성과**: 총 수익률, 승률, 평균 수익/손실, Profit Factor, 최대 낙폭, 샤프 비율
+- **Buy & Hold 비교**: 전략 수익률 vs 단순 보유 수익률
+
+### 테스트 실행
+
+```bash
+# 백테스트 모듈 단위 테스트
+python -m unittest tests.test_backtest -v
+```
+
+---
+
 ## 🛠️ 기술 스택
 
 | 항목 | 내용 |
@@ -153,6 +210,7 @@ stock_bot/
 ├── scheduler.py       # 백그라운드 알림 스케줄러
 ├── stock_api.py       # Yahoo Finance API 연동
 ├── telegram_bot.py    # 텔레그램 봇 (명령어 처리/메시지 전송)
+├── backtest.py        # 백테스트 (예측 정확도 검증)
 ├── Dockerfile         # 도커 이미지 빌드
 ├── requirements.txt   # 의존성 명세 (표준 라이브러리만)
 ├── .env.example       # 환경 변수 템플릿
