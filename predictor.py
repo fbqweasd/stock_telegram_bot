@@ -84,6 +84,11 @@ def predict_buy_sell_prices(stock_data):
         trend_weight = 0.8   # 횡보장에서는 추세 지표 가중치 감소
         meanrev_weight = 1.3 # 평균회귀 지표 가중치 증가
     
+    # 볼린저 밴드 스퀴즈 감지 (수정 5)
+    # bandwidth < 0.05 이면 스퀴즈 상태 (변동성 압축)
+    is_squeeze = bandwidth < 0.05
+    squeeze_weight = 0.5  # 스퀴즈 시 추가 가중치
+    
     # ============================================================
     # SCORING SYSTEM: 각 지표별 점수 (-2 ~ +2)
     # 양수 = 매수 신호, 음수 = 매도 신호
@@ -120,6 +125,13 @@ def predict_buy_sell_prices(stock_data):
     else:
         score -= rsi_weight
         signals.append("RSI 극단적 과매수 (강한 매도 신호)")
+    
+    # 스퀴즈 상태에서는 RSI 신호 강화 (수정 5)
+    if is_squeeze:
+        if rsi <= 30:
+            score += squeeze_weight
+        elif rsi >= 70:
+            score -= squeeze_weight
     
     # 2. MACD Score (추세 지표, 가중치 2.0 * trend_weight)
     macd_weight = 2.0 * trend_weight
@@ -239,24 +251,31 @@ def predict_buy_sell_prices(stock_data):
     recommendation = "HOLD"
     confidence = 50
     
+    # 수정 2: 추세장에서 매도/매수 임계값 조정
+    # 상승 추세장에서는 매도 임계값을 더 엄격하게 (잘못된 매도 신호 감소)
+    # 하락 추세장에서는 매도 임계값을 더 민감하게 (빠른 매도 감지)
+    if market_regime == "TRENDING_UP":
+        sell_threshold = -2.5   # 상승 추세에서는 더 엄격한 매도 기준
+        buy_threshold = 1.0     # 상승 추세에서는 더 민감한 매수 기준
+    elif market_regime == "TRENDING_DOWN":
+        sell_threshold = -1.0   # 하락 추세에서는 더 민감한 매도 기준
+        buy_threshold = 2.5     # 하락 추세에서는 더 엄격한 매수 기준
+    else:  # RANGING
+        sell_threshold = -1.5
+        buy_threshold = 1.5
+    
     if score >= 3.5:
         recommendation = "STRONG BUY"
         confidence = min(95, 70 + int(abs(score) * 2.5))
-    elif score >= 1.5:
+    elif score >= buy_threshold:
         recommendation = "BUY"
         confidence = min(90, 55 + int(abs(score) * 5))
-    elif score >= 0.5:
-        recommendation = "BUY"
-        confidence = 55
     elif score <= -3.5:
         recommendation = "STRONG SELL"
         confidence = min(95, 70 + int(abs(score) * 2.5))
-    elif score <= -1.5:
+    elif score <= sell_threshold:
         recommendation = "SELL"
         confidence = min(90, 55 + int(abs(score) * 5))
-    elif score <= -0.5:
-        recommendation = "SELL"
-        confidence = 55
     else:
         recommendation = "HOLD"
         # 중립 구간에서도 점수 방향성 표시
@@ -266,6 +285,34 @@ def predict_buy_sell_prices(stock_data):
             confidence = 55 + int(abs(score) * 5)
         else:
             confidence = 50
+    
+    # 수정 3: 신뢰도 계산 개선 - 지표 일치도 반영
+    # 모든 지표가 같은 방향이면 신뢰도 +10, 충돌이 있으면 -10
+    positive_signals = sum(1 for s in signals if "매수" in s or "상승" in s or "골든" in s or "반등" in s or "지지" in s)
+    negative_signals = sum(1 for s in signals if "매도" in s or "하락" in s or "데드" in s or "저항" in s)
+    
+    if recommendation in ("STRONG BUY", "BUY"):
+        if positive_signals >= 3 and negative_signals == 0:
+            confidence += 10  # 모든 지표가 매수 방향
+        elif negative_signals >= 2:
+            confidence -= 10  # 지표 충돌
+    elif recommendation in ("STRONG SELL", "SELL"):
+        if negative_signals >= 3 and positive_signals == 0:
+            confidence += 10  # 모든 지표가 매도 방향
+        elif positive_signals >= 2:
+            confidence -= 10  # 지표 충돌
+    
+    # 수정 6: 매도 신호에 추세 확인 조건 추가
+    if recommendation in ("SELL", "STRONG SELL"):
+        if sma20_val is not None and sma50_val is not None:
+            if sma20_val > sma50_val:  # 상승 추세인데 매도 신호
+                confidence -= 5  # 신뢰도 낮춤
+            elif sma20_val < sma50_val:  # 하락 추세인데 매도 신호
+                confidence += 5  # 신뢰도 높임
+    
+    # 스퀴즈 상태에서는 신뢰도 조정 (수정 5)
+    if is_squeeze:
+        confidence += 5  # 스퀴즈 후 방향성 돌파 가능성
     
     # Limit confidence
     confidence = min(95, max(25, round(confidence)))

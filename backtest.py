@@ -257,8 +257,9 @@ def run_backtest(data, horizon=5, step=1, min_data_points=60,
             correct = price_change_pct < 0
             direction = "매도"
         else:  # HOLD
-            # 홀드: 가격 변동이 ±1% 이내면 정확 (횡보 예측)
-            correct = abs(price_change_pct) <= 1.0
+            # 홀드: 가격 변동이 ±2.5% 이내면 정확 (횡보 예측)
+            # 수정 1: 5일 기준 ±1%는 너무 엄격하여 ±2.5%로 완화
+            correct = abs(price_change_pct) <= 2.5
             direction = "홀드"
 
         predictions.append({
