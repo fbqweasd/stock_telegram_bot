@@ -35,6 +35,8 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL", 3600))
 # DB path inside data directory
 DB_PATH = os.environ.get("DB_PATH", "data/stock_bot.db")
+# 매수/매도 권장 알림: 한 종목당 하루 최대 알림 횟수 (기본 3회)
+MAX_DAILY_RECOMMENDATION_ALERTS = int(os.environ.get("MAX_DAILY_RECOMMENDATION_ALERTS", 3))
 
 # Ensure the data directory exists
 db_dir = os.path.dirname(DB_PATH)

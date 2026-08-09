@@ -1,9 +1,10 @@
 import time
 import threading
-from config import CHECK_INTERVAL
+from config import CHECK_INTERVAL, MAX_DAILY_RECOMMENDATION_ALERTS
 import database
 import stock_api
 import indicators
+import predictor
 import market_indices
 import market_calendar
 import weekly_report
@@ -704,6 +705,112 @@ class AlertScheduler:
                     self.bot.send_message(chat_id, alert_text, message_thread_id=topic_id)
                     # Register that we notified the user
                     database.set_last_signal(chat_id, ticker, sig_type, price_now)
+
+        # --- 매수/매도 권장 알림 (STRONG BUY / STRONG SELL) ---
+        # 무조건 사야하거나 팔아야하는 상황에 권장 가격을 제시하며 알림
+        # 한 종목당 하루 최대 알림 횟수 제한 (MAX_DAILY_RECOMMENDATION_ALERTS)
+        self._check_recommendation_alerts(ticker, stock_data, subscribers)
+
+    def _check_recommendation_alerts(self, ticker, stock_data, subscribers):
+        """
+        STRONG BUY / STRONG SELL 신호를 감지하여 권장 가격과 함께 알림을 전송합니다.
+        - STRONG BUY: 무조건 매수해야 하는 상황 → 매수 권장 가격 제시
+        - STRONG SELL: 무조건 매도해야 하는 상황 → 매도 권장 가격 제시
+        한 종목당 하루 최대 알림 횟수는 MAX_DAILY_RECOMMENDATION_ALERTS로 제한됩니다.
+        """
+        try:
+            # predictor를 사용하여 기술적 분석 수행
+            analysis = predictor.predict_buy_sell_prices(stock_data)
+            if "error" in analysis:
+                return
+
+            recommendation = analysis["recommendation"]
+            # STRONG BUY / STRONG SELL 만 권장 알림 대상
+            if recommendation not in ("STRONG BUY", "STRONG SELL"):
+                return
+
+            current_price = analysis["current_price"]
+            buy_target = analysis["buy_target"]
+            sell_target = analysis["sell_target"]
+            stop_loss = analysis.get("stop_loss", 0)
+            confidence = analysis["confidence"]
+            currency = analysis["currency"]
+            stock_name = stock_data.get("name", ticker)
+
+            # 오늘 날짜 (KST 기준)
+            kst_offset = 9 * 60 * 60
+            today_str = time.strftime("%Y-%m-%d", time.gmtime(time.time() + kst_offset))
+
+            # 알림 유형 결정
+            if recommendation == "STRONG BUY":
+                alert_type = "STRONG_BUY"
+                emoji = "🟢🔥"
+                title = "무조건 매수 권장!"
+                action_desc = (
+                    f"🎯 <b>권장 매수 가격:</b> <code>{buy_target:.2f} {currency}</code> 이하\n"
+                    f"<i>(현재가 {current_price:.2f} {currency} 대비 {(current_price - buy_target) / current_price * 100:.1f}% 하락 시 매수 기회)</i>\n"
+                )
+                if stop_loss > 0:
+                    action_desc += f"🛑 <b>손절가:</b> <code>{stop_loss:.2f} {currency}</code>\n"
+            else:  # STRONG SELL
+                alert_type = "STRONG_SELL"
+                emoji = "🔴🔥"
+                title = "무조건 매도 권장!"
+                action_desc = (
+                    f"🎯 <b>권장 매도 가격:</b> <code>{sell_target:.2f} {currency}</code> 이상\n"
+                    f"<i>(현재가 {current_price:.2f} {currency} 대비 {(sell_target - current_price) / current_price * 100:.1f}% 상승 시 매도 기회)</i>\n"
+                )
+
+            # 신호 요약 (최대 3개)
+            signals = analysis.get("signals", [])
+            signal_summary = ""
+            if signals:
+                signal_summary = "\n".join(f"• {sig}" for sig in signals[:3])
+
+            alert_text = (
+                f"<b>{emoji} [{stock_name}] ({ticker}) {title}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"💵 현재가: <b>{current_price:.2f} {currency}</b>\n"
+                f"📢 추천 등급: <b>{emoji} {recommendation}</b>\n"
+                f"🎯 예측 신뢰도: <b>{confidence}%</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"{action_desc}"
+            )
+
+            if signal_summary:
+                alert_text += (
+                    f"━━━━━━━━━━━━━━━━━━━\n"
+                    f"<b>🔍 판단 근거</b>\n"
+                    f"{signal_summary}\n"
+                )
+
+            alert_text += (
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"💡 상세 분석 리포트는 <code>/predict {ticker}</code> 를 입력하세요!"
+            )
+
+            # 각 구독자에게 전송 (하루 최대 알림 횟수 제한)
+            for chat_id in subscribers:
+                if not database.get_chat_alerts_enabled(chat_id):
+                    continue
+
+                # 오늘 이미 보낸 권장 알림 횟수 확인
+                alert_count = database.get_recommendation_alert_count(chat_id, ticker, today_str)
+                if alert_count >= MAX_DAILY_RECOMMENDATION_ALERTS:
+                    continue
+
+                # 같은 유형(STRONG_BUY/STRONG_SELL)을 오늘 이미 보냈으면 스킵
+                if database.has_sent_recommendation_alert(chat_id, ticker, today_str, alert_type):
+                    continue
+
+                topic_id = database.get_chat_topic(chat_id)
+                self.bot.send_message(chat_id, alert_text, message_thread_id=topic_id)
+                database.record_recommendation_alert(chat_id, ticker, today_str, alert_type, current_price)
+
+            print(f"📢 Recommendation alert sent for {ticker}: {recommendation}")
+
+        except Exception as e:
+            print(f"Error checking recommendation alerts for {ticker}: {e}")
 
     def _check_price_change_alerts(self, ticker, current_price, currency, subscribers, stock_data):
         """

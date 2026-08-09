@@ -132,6 +132,20 @@ def init_db():
                 PRIMARY KEY (chat_id, week_start)
             )
         """)
+
+        # Table to track 매수/매도 권장 알림 (STRONG BUY/STRONG SELL)
+        # 한 종목당 하루 최대 알림 횟수를 제한하기 위해 사용
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS recommendation_alerts (
+                chat_id INTEGER,
+                ticker TEXT,
+                alert_date TEXT,
+                alert_type TEXT,
+                price REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (chat_id, ticker, alert_date, alert_type)
+            )
+        """)
         conn.commit()
 
 def add_subscription(chat_id, ticker):
@@ -519,3 +533,53 @@ def get_chat_alerts_enabled(chat_id):
         if row is None:
             return True
         return bool(row[0])
+
+
+# ================================================================
+# 매수/매도 권장 알림 (STRONG BUY/STRONG SELL) 추적
+# 한 종목당 하루 최대 알림 횟수를 제한하기 위해 사용
+# ================================================================
+
+def get_recommendation_alert_count(chat_id, ticker, alert_date):
+    """
+    특정 사용자가 특정 종목에 대해 해당 날짜에 받은 매수/매도 권장 알림 횟수를 반환합니다.
+    """
+    ticker = ticker.upper().strip()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) FROM recommendation_alerts WHERE chat_id = ? AND ticker = ? AND alert_date = ?",
+            (chat_id, ticker, alert_date)
+        )
+        row = cursor.fetchone()
+        return row[0] if row else 0
+
+
+def has_sent_recommendation_alert(chat_id, ticker, alert_date, alert_type):
+    """
+    특정 사용자가 특정 종목에 대해 해당 날짜에 특정 유형(STRONG_BUY/STRONG_SELL)의
+    권장 알림을 이미 받았는지 확인합니다.
+    """
+    ticker = ticker.upper().strip()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT 1 FROM recommendation_alerts WHERE chat_id = ? AND ticker = ? AND alert_date = ? AND alert_type = ?",
+            (chat_id, ticker, alert_date, alert_type)
+        )
+        return cursor.fetchone() is not None
+
+
+def record_recommendation_alert(chat_id, ticker, alert_date, alert_type, price):
+    """
+    매수/매도 권장 알림을 보냈음을 기록합니다.
+    """
+    ticker = ticker.upper().strip()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR IGNORE INTO recommendation_alerts (chat_id, ticker, alert_date, alert_type, price, created_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (chat_id, ticker, alert_date, alert_type, price))
+        conn.commit()
+        return cursor.rowcount > 0
