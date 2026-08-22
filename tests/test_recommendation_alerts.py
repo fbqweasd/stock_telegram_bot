@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import database
-from config import MAX_DAILY_RECOMMENDATION_ALERTS
 from scheduler import AlertScheduler
 
 
@@ -54,17 +53,14 @@ class RecommendationAlertDatabaseTests(unittest.TestCase):
         self.assertFalse(database.has_sent_recommendation_alert(1, "AAPL", "2026-08-09", "STRONG_SELL"))
 
     def test_daily_limit_enforced(self):
-        """하루 최대 알림 횟수 제한 확인"""
-        # 최대 횟수만큼 기록
-        for i in range(MAX_DAILY_RECOMMENDATION_ALERTS):
-            alert_type = f"TYPE_{i}"
-            database.record_recommendation_alert(1, "AAPL", "2026-08-09", alert_type, 150.0 + i)
+        """유형별 하루 1회 제한 확인 (유형당 최대 1회, 두 유형이면 2회)"""
+        database.record_recommendation_alert(1, "AAPL", "2026-08-09", "STRONG_BUY", 150.0)
+        self.assertTrue(database.has_sent_recommendation_alert(1, "AAPL", "2026-08-09", "STRONG_BUY"))
 
+        # 다른 유형(STRONG_SELL)은 별도로 하루 1회 허용됨
+        database.record_recommendation_alert(1, "AAPL", "2026-08-09", "STRONG_SELL", 160.0)
         count = database.get_recommendation_alert_count(1, "AAPL", "2026-08-09")
-        self.assertEqual(count, MAX_DAILY_RECOMMENDATION_ALERTS)
-
-        # 추가 알림은 제한에 걸려야 함
-        self.assertGreaterEqual(count, MAX_DAILY_RECOMMENDATION_ALERTS)
+        self.assertEqual(count, 2)
 
     def test_different_dates_are_independent(self):
         """날짜가 다르면 알림 횟수가 독립적으로 계산됨"""
@@ -180,18 +176,18 @@ class RecommendationAlertSchedulerTests(unittest.TestCase):
         self.mock_bot.send_message.assert_not_called()
 
     def test_daily_limit_prevents_excess_alerts(self):
-        """하루 최대 알림 횟수 제한이 작동하는지 확인"""
+        """다른 유형 알림이 기록돼 있어도 같은 유형은 하루 1회만 전송되는지 확인"""
         stock_data = self._create_strong_buy_stock_data()
         database.add_subscription(1, "TEST")
 
-        # 오늘 날짜
         import time
         kst_offset = 9 * 60 * 60
         today_str = time.strftime("%Y-%m-%d", time.gmtime(time.time() + kst_offset))
 
-        # 최대 횟수만큼 미리 기록
-        for i in range(MAX_DAILY_RECOMMENDATION_ALERTS):
-            database.record_recommendation_alert(1, "TEST", today_str, f"TYPE_{i}", 180.0)
+        # 오늘 이미 STRONG_BUY 알림을 보냈음 (다른 유형과 무관하게 차단됨)
+        database.record_recommendation_alert(1, "TEST", today_str, "STRONG_BUY", 180.0)
+        # 다른 유형(STRONG_SELL)도 보냈음 - 총 2회지만 유형당 1회 정책상 무관
+        database.record_recommendation_alert(1, "TEST", today_str, "STRONG_SELL", 180.0)
 
         with patch("scheduler.predictor.predict_buy_sell_prices") as mock_predict:
             mock_predict.return_value = {
@@ -211,7 +207,7 @@ class RecommendationAlertSchedulerTests(unittest.TestCase):
 
             self.scheduler._check_recommendation_alerts("TEST", stock_data, [1])
 
-        # 최대 횟수에 도달했으므로 추가 알림이 전송되지 않아야 함
+        # 같은 유형(STRONG_BUY)을 오늘 이미 보냈으므로 추가 알림이 전송되지 않아야 함
         self.mock_bot.send_message.assert_not_called()
 
     def test_same_type_alert_not_sent_twice(self):

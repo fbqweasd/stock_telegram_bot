@@ -1,6 +1,6 @@
 import time
 import threading
-from config import CHECK_INTERVAL, MAX_DAILY_RECOMMENDATION_ALERTS
+from config import CHECK_INTERVAL
 import database
 import stock_api
 import indicators
@@ -114,6 +114,10 @@ class AlertScheduler:
                 if database.has_sent_weekly_report(chat_id, week_start):
                     continue
 
+                # 알람 수신 수준 확인 (시장 알림)
+                if not database.should_send_alert(chat_id, is_market_wide=True):
+                    continue
+
                 topic_id = database.get_chat_topic(chat_id)
                 self.bot.send_message(chat_id, report_text, message_thread_id=topic_id)
                 database.record_weekly_report_send(chat_id, week_start)
@@ -168,6 +172,10 @@ class AlertScheduler:
             
             for chat_id, ticker in all_subscriptions:
                 if chat_id in sent_to_chats:
+                    continue
+                
+                # 알람 수신 수준 확인 (시장 알림)
+                if not database.should_send_alert(chat_id, is_market_wide=True):
                     continue
                 
                 topic_id = database.get_chat_topic(chat_id)
@@ -226,6 +234,10 @@ class AlertScheduler:
 
             for chat_id, ticker in all_subscriptions:
                 if chat_id in sent_to_chats:
+                    continue
+
+                # 알람 수신 수준 확인 (시장 알림)
+                if not database.should_send_alert(chat_id, is_market_wide=True):
                     continue
 
                 topic_id = database.get_chat_topic(chat_id)
@@ -298,7 +310,8 @@ class AlertScheduler:
             for chat_id, ticker in all_subscriptions:
                 if chat_id in sent_to_chats:
                     continue
-                if not database.get_chat_alerts_enabled(chat_id):
+                # 알람 수신 수준 확인 (시장 알림)
+                if not database.should_send_alert(chat_id, is_market_wide=True):
                     continue
                 
                 topic_id = database.get_chat_topic(chat_id)
@@ -373,7 +386,8 @@ class AlertScheduler:
             for chat_id, ticker in all_subscriptions:
                 if chat_id in sent_to_chats:
                     continue
-                if not database.get_chat_alerts_enabled(chat_id):
+                # 알람 수신 수준 확인 (시장 알림)
+                if not database.should_send_alert(chat_id, is_market_wide=True):
                     continue
 
                 # 오늘 이미 최고치 알림을 보냈는지 확인
@@ -434,7 +448,8 @@ class AlertScheduler:
                 )
 
                 for chat_id in subscribers:
-                    if not database.get_chat_alerts_enabled(chat_id):
+                    # 알람 수신 수준 확인 (개별 종목 중요 알림)
+                    if not database.should_send_alert(chat_id, is_important=True):
                         continue
                     if database.has_sent_high_breakout_alert(chat_id, ticker, "ALL_TIME_HIGH", today_str):
                         continue
@@ -464,7 +479,8 @@ class AlertScheduler:
                 )
 
                 for chat_id in subscribers:
-                    if not database.get_chat_alerts_enabled(chat_id):
+                    # 알람 수신 수준 확인 (개별 종목 중요 알림)
+                    if not database.should_send_alert(chat_id, is_important=True):
                         continue
                     if database.has_sent_high_breakout_alert(chat_id, ticker, "WEEK52_HIGH", today_str):
                         continue
@@ -525,6 +541,10 @@ class AlertScheduler:
         Evaluates technical criteria for a single ticker and alerts subscribers.
         Also checks price change % alerts.
         """
+        # 오늘 날짜 (KST 기준) - 기술적 신호 하루 1회 제한에 사용
+        kst_offset = 9 * 60 * 60
+        today_str = time.strftime("%Y-%m-%d", time.gmtime(time.time() + kst_offset))
+
         closes = stock_data["closes"]
         highs = stock_data["highs"]
         lows = stock_data["lows"]
@@ -684,7 +704,13 @@ class AlertScheduler:
         for event_key, event_info in events.items():
             sig_type = event_info["type"]
             for chat_id in subscribers:
-                if not database.get_chat_alerts_enabled(chat_id):
+                # 알람 수신 수준 확인 (일반 기술적 신호: '모든 알람' 수준에서만 수신)
+                if not database.should_send_alert(chat_id):
+                    continue
+
+                # 하루 1회 제한: 동일 신호 유형은 같은 날짜에 1번만 전송
+                # (이탈→회복→재이탈처럼 상태가 반복돼도 하루 1번만 알림)
+                if database.has_sent_signal_alert(chat_id, ticker, sig_type, today_str):
                     continue
 
                 # Check database to see if we already notified this user about this specific signal
@@ -705,10 +731,12 @@ class AlertScheduler:
                     self.bot.send_message(chat_id, alert_text, message_thread_id=topic_id)
                     # Register that we notified the user
                     database.set_last_signal(chat_id, ticker, sig_type, price_now)
+                    # 하루 1회 제한 기록
+                    database.record_signal_alert(chat_id, ticker, sig_type, today_str, price_now)
 
         # --- 매수/매도 권장 알림 (STRONG BUY / STRONG SELL) ---
         # 무조건 사야하거나 팔아야하는 상황에 권장 가격을 제시하며 알림
-        # 한 종목당 하루 최대 알림 횟수 제한 (MAX_DAILY_RECOMMENDATION_ALERTS)
+        # 유형(STRONG_BUY/STRONG_SELL)당 하루 1회만 전송
         self._check_recommendation_alerts(ticker, stock_data, subscribers)
 
     def _check_recommendation_alerts(self, ticker, stock_data, subscribers):
@@ -716,7 +744,7 @@ class AlertScheduler:
         STRONG BUY / STRONG SELL 신호를 감지하여 권장 가격과 함께 알림을 전송합니다.
         - STRONG BUY: 무조건 매수해야 하는 상황 → 매수 권장 가격 제시
         - STRONG SELL: 무조건 매도해야 하는 상황 → 매도 권장 가격 제시
-        한 종목당 하루 최대 알림 횟수는 MAX_DAILY_RECOMMENDATION_ALERTS로 제한됩니다.
+        유형(STRONG_BUY/STRONG_SELL)별로 하루 1회만 전송됩니다.
         """
         try:
             # predictor를 사용하여 기술적 분석 수행
@@ -789,17 +817,13 @@ class AlertScheduler:
                 f"💡 상세 분석 리포트는 <code>/predict {ticker}</code> 를 입력하세요!"
             )
 
-            # 각 구독자에게 전송 (하루 최대 알림 횟수 제한)
+            # 각 구독자에게 전송 (유형당 하루 1회 제한)
             for chat_id in subscribers:
-                if not database.get_chat_alerts_enabled(chat_id):
+                # 알람 수신 수준 확인 (개별 종목 중요 알림)
+                if not database.should_send_alert(chat_id, is_important=True):
                     continue
 
-                # 오늘 이미 보낸 권장 알림 횟수 확인
-                alert_count = database.get_recommendation_alert_count(chat_id, ticker, today_str)
-                if alert_count >= MAX_DAILY_RECOMMENDATION_ALERTS:
-                    continue
-
-                # 같은 유형(STRONG_BUY/STRONG_SELL)을 오늘 이미 보냈으면 스킵
+                # 같은 유형(STRONG_BUY/STRONG_SELL)을 오늘 이미 보냈으면 스킵 (하루 1회)
                 if database.has_sent_recommendation_alert(chat_id, ticker, today_str, alert_type):
                     continue
 
@@ -848,7 +872,8 @@ class AlertScheduler:
             return
 
         for chat_id in subscribers:
-            if not database.get_chat_alerts_enabled(chat_id):
+            # 알람 수신 수준 확인 (개별 종목 중요 알림: 급등락)
+            if not database.should_send_alert(chat_id, is_important=True):
                 continue
 
             try:

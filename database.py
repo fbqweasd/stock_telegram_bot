@@ -100,13 +100,43 @@ def init_db():
         """)
 
         # Table to store whether automatic alerts are enabled for a chat
+        # alert_level: 알람 수신 수준 ('OFF' / 'MARKET' / 'IMPORTANT' / 'ALL')
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS chat_alert_settings (
                 chat_id INTEGER PRIMARY KEY,
                 alerts_enabled INTEGER NOT NULL DEFAULT 1,
+                alert_level TEXT,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # 기존 스키마 마이그레이션: alert_level 컬럼이 없으면 추가하고
+        # 기존 alerts_enabled 값을 기반으로 레벨을 채워준다.
+        cursor.execute("PRAGMA table_info(chat_alert_settings)")
+        alert_setting_columns = [col[1] for col in cursor.fetchall()]
+        if "alert_level" not in alert_setting_columns:
+            cursor.execute("ALTER TABLE chat_alert_settings ADD COLUMN alert_level TEXT")
+            cursor.execute("""
+                UPDATE chat_alert_settings
+                SET alert_level = CASE WHEN alerts_enabled = 0 THEN 'OFF' ELSE 'ALL' END
+                WHERE alert_level IS NULL
+            """)
+
+        # Table to track daily technical signal alerts (기술적 신호 하루 1회 제한)
+        # 동일한 (티커, 신호 유형) 조합은 같은 날짜에 1번만 알림을 보내기 위해 사용
+        # (20일선 돌파 등 상태가 반복적으로 바뀌어도 하루 1번만 알림)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS daily_signal_alerts (
+                chat_id INTEGER,
+                ticker TEXT,
+                signal_type TEXT,
+                alert_date TEXT,
+                price REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (chat_id, ticker, signal_type, alert_date)
+            )
+        """)
+
 
         # Table to track high breakout alerts (역대/52주 최고가 돌파 알림)
         # 동일한 (티커, 유형) 조합은 하루에 1번만 알림을 보내기 위해 사용
@@ -506,19 +536,96 @@ def get_chat_topic(chat_id):
         return None
 
 
-def set_chat_alerts_enabled(chat_id, enabled):
+# ================================================================
+# 알람 수신 수준 (Alert Level) 설정
+#   OFF      : 모든 자동 알람을 받지 않음
+#   MARKET   : 장 마감 요약/주간 리포트 등 종목과 무관한 시장 메시지만 수신
+#   IMPORTANT: 시장 메시지 + 개별 종목의 중요 알림(STRONG BUY/SELL, 급등락,
+#              최고가 돌파)만 수신
+#   ALL      : 모든 자동 알람을 수신 (기본값)
+# ================================================================
+
+ALERT_LEVELS = ("OFF", "MARKET", "IMPORTANT", "ALL")
+
+ALERT_LEVEL_LABELS = {
+    "OFF": "🔕 모든 알람 받지 않음",
+    "MARKET": "🌍 시장 알림만 (장마감 요약 등)",
+    "IMPORTANT": "⭐ 중요 알림 + 시장 알림",
+    "ALL": "🔔 모든 알람 받기",
+}
+
+
+def set_chat_alert_level(chat_id, level):
     """
-    Enables or disables automatic alerts for a chat.
+    Sets the alert receiving level for a chat.
+    level must be one of ALERT_LEVELS ('OFF', 'MARKET', 'IMPORTANT', 'ALL').
     Returns True when the setting is stored successfully.
+    """
+    if level not in ALERT_LEVELS:
+        raise ValueError(f"Invalid alert level: {level}")
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO chat_alert_settings
+                (chat_id, alerts_enabled, alert_level, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        """, (chat_id, 0 if level == "OFF" else 1, level))
+        conn.commit()
+        return True
+
+
+def get_chat_alert_level(chat_id):
+    """
+    Returns the alert receiving level for a chat.
+    Defaults to 'ALL' if no setting exists (기존 동작과 호환).
     """
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT OR REPLACE INTO chat_alert_settings (chat_id, alerts_enabled, updated_at)
-            VALUES (?, ?, CURRENT_TIMESTAMP)
-        """, (chat_id, 1 if enabled else 0))
-        conn.commit()
-        return True
+            SELECT alert_level, alerts_enabled FROM chat_alert_settings WHERE chat_id = ?
+        """, (chat_id,))
+        row = cursor.fetchone()
+        if row is None:
+            return "ALL"
+        alert_level, alerts_enabled = row[0], row[1]
+        if alert_level in ALERT_LEVELS:
+            return alert_level
+        # 레거시 행(alert_level 이 비어있는 경우): alerts_enabled 값으로 판단
+        return "ALL" if alerts_enabled else "OFF"
+
+
+def should_send_alert(chat_id, is_market_wide=False, is_important=False):
+    """
+    Determines whether a chat should receive an alert of the given kind
+    based on its configured alert level.
+    - is_market_wide: 장마감 요약, 주간 리포트, 극단 조건, 지수 최고치 등
+                      특정 종목과 무관한 시장 전체 메시지인지 여부
+    - is_important:   STRONG BUY/SELL 권장, 급등락 변동, 역대/52주 최고가
+                      돌파 같은 개별 종목의 중요 알림인지 여부
+    """
+    level = get_chat_alert_level(chat_id)
+    if level == "OFF":
+        return False
+    if level == "MARKET":
+        return is_market_wide
+    if level == "IMPORTANT":
+        return is_market_wide or is_important
+    return True  # 'ALL'
+
+
+def set_chat_alerts_enabled(chat_id, enabled):
+    """
+    Enables or disables automatic alerts for a chat. (하위 호환용)
+    enabled=False → 'OFF', enabled=True → 기존에 OFF 였다면 'ALL'로 복구.
+    Returns True when the setting is stored successfully.
+    """
+    current = get_chat_alert_level(chat_id)
+    if enabled and current == "OFF":
+        return set_chat_alert_level(chat_id, "ALL")
+    if not enabled:
+        return set_chat_alert_level(chat_id, "OFF")
+    # 이미 켜져 있으면 현재 레벨 유지
+    return True
 
 
 def get_chat_alerts_enabled(chat_id):
@@ -526,18 +633,47 @@ def get_chat_alerts_enabled(chat_id):
     Returns whether automatic alerts are enabled for a chat.
     Defaults to True if no setting exists.
     """
+    return get_chat_alert_level(chat_id) != "OFF"
+
+
+# ================================================================
+# 기술적 신호 일일 알림 추적 (하루 1회 제한)
+# 20일선 돌파 등 상태가 하루에 여러 번 바뀌어도 유형당 1번만 알림
+# ================================================================
+
+def has_sent_signal_alert(chat_id, ticker, signal_type, alert_date):
+    """
+    특정 사용자가 특정 종목/신호 유형에 대해 해당 날짜에 이미 알림을 받았는지 확인합니다.
+    """
+    ticker = ticker.upper().strip()
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT alerts_enabled FROM chat_alert_settings WHERE chat_id = ?", (chat_id,))
-        row = cursor.fetchone()
-        if row is None:
-            return True
-        return bool(row[0])
+        cursor.execute("""
+            SELECT 1 FROM daily_signal_alerts
+            WHERE chat_id = ? AND ticker = ? AND signal_type = ? AND alert_date = ?
+        """, (chat_id, ticker, signal_type, alert_date))
+        return cursor.fetchone() is not None
+
+
+def record_signal_alert(chat_id, ticker, signal_type, alert_date, price=None):
+    """
+    해당 날짜에 신호 유형의 알림을 보냈음을 기록합니다.
+    """
+    ticker = ticker.upper().strip()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR IGNORE INTO daily_signal_alerts
+                (chat_id, ticker, signal_type, alert_date, price)
+            VALUES (?, ?, ?, ?, ?)
+        """, (chat_id, ticker, signal_type, alert_date, price))
+        conn.commit()
+        return cursor.rowcount > 0
 
 
 # ================================================================
 # 매수/매도 권장 알림 (STRONG BUY/STRONG SELL) 추적
-# 한 종목당 하루 최대 알림 횟수를 제한하기 위해 사용
+# 한 종목당 유형(STRONG_BUY/STRONG_SELL)별 하루 최대 1회
 # ================================================================
 
 def get_recommendation_alert_count(chat_id, ticker, alert_date):

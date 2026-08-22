@@ -28,6 +28,7 @@ COMMANDS = [
     {"command": "indices", "description": "시장 인덱스/공포탐욕지수/환율 조회"},
     {"command": "korea", "description": "한국 시장(KOSPI/KOSDAQ) 및 원/달러 환율"},
     {"command": "alerts", "description": "가격 변동 알림 설정/조회"},
+    {"command": "alarms", "description": "🔔 알람 수신 수준 선택 (버튼으로 설정)"},
     {"command": "weekly", "description": "지난주 주요지수 및 관심종목 주간 요약 리포트"},
 ]
 
@@ -72,11 +73,12 @@ class TelegramBot:
             print(f"Telegram API Error on {method}: {e}")
         return None
 
-    def send_message(self, chat_id, text, parse_mode="HTML", reply_to_message_id=None, message_thread_id=None):
+    def send_message(self, chat_id, text, parse_mode="HTML", reply_to_message_id=None, message_thread_id=None, reply_markup=None):
         """
         Sends a message to the specified chat_id.
         - reply_to_message_id: 특정 메시지에 답장(Reply) 형태로 보냅니다.
         - message_thread_id: Topics(스레드)가 활성화된 그룹에서 특정 스레드에 메시지를 보냅니다.
+        - reply_markup: 인라인 키보드 등 Telegram reply_markup JSON 딕셔너리.
         Returns the message_id on success, None on failure.
         """
         payload = {
@@ -88,6 +90,8 @@ class TelegramBot:
             payload["reply_to_message_id"] = reply_to_message_id
         if message_thread_id is not None:
             payload["message_thread_id"] = message_thread_id
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
             
         result = self._api_call("sendMessage", payload)
         if result and result.get("ok") and result.get("result"):
@@ -103,6 +107,31 @@ class TelegramBot:
             "message_id": message_id
         }
         return self._api_call("deleteMessage", payload)
+
+    def answer_callback_query(self, callback_query_id, text=None, show_alert=False):
+        """
+        Acknowledges a callback query (인라인 버튼 클릭 시 로딩 표시 제거 및 알림 표시).
+        """
+        payload = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text
+        if show_alert:
+            payload["show_alert"] = True
+        return self._api_call("answerCallbackQuery", payload)
+
+    def edit_message_text(self, chat_id, message_id, text, parse_mode="HTML", reply_markup=None):
+        """
+        Edits an existing message's text (인라인 키보드 상태 갱신용).
+        """
+        payload = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "parse_mode": parse_mode
+        }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        return self._api_call("editMessageText", payload)
 
     def get_updates(self):
         """
@@ -166,6 +195,8 @@ class TelegramBot:
                     
                     if "message" in update:
                         self._handle_message(update["message"])
+                    if "callback_query" in update:
+                        self._handle_callback_query(update["callback_query"])
             except Exception as e:
                 print(f"Error in Polling Loop: {e}")
                 time.sleep(5)  # Rest before retrying to prevent aggressive loops
@@ -244,6 +275,9 @@ class TelegramBot:
             "/alerts": "/alerts",
             "/알림": "/alerts",
             "/alert": "/alerts",
+            "/alarms": "/alarms",
+            "/알람": "/alarms",
+            "/알람설정": "/alarms",
             "/weekly": "/weekly",
             "/주간": "/weekly",
             "/주간리포트": "/weekly",
@@ -277,6 +311,8 @@ class TelegramBot:
             self._handle_korea(chat_id, reply_to_message_id, message_thread_id)
         elif normalized_cmd == "/alerts":
             self._handle_alerts(chat_id, arg, reply_to_message_id, message_thread_id)
+        elif normalized_cmd == "/alarms":
+            self._handle_alarm_settings(chat_id, reply_to_message_id, message_thread_id)
         elif normalized_cmd == "/weekly":
             self._handle_weekly(chat_id, reply_to_message_id, message_thread_id)
         else:
@@ -317,9 +353,15 @@ class TelegramBot:
             "📌 <b>/korea</b> 또는 <b>/한국</b> 또는 <b>/kr</b> - 한국 시장(KOSPI/KOSDAQ) 및 원/달러 환율을 조회합니다.\n\n"
             "📌 <b>/weekly</b> 또는 <b>/주간</b> 또는 <b>/w</b> - 지난주 주요 지수 및 관심 종목의 주간 변화 요약 리포트를 제공합니다.\n"
             "<i>주요 지수(S&P500, NASDAQ, DOW, KOSPI, KOSDAQ)와 구독 중인 종목의 주간 변동을 한눈에 확인</i>\n\n"
+            "📌 <b>/alarms</b> 또는 <b>/알람</b> - 알람 수신 수준을 버튼으로 선택합니다.\n"
+            "<i>모두 끄기 / 시장 알림만 / 중요 알림만 / 모든 알람 중에서 선택 가능</i>\n\n"
+            "📌 <b>/alerts on|off</b> 또는 <b>/알림 on|off</b> - 자동 알림을 켜거나 끕니다.\n\n"
             "📌 <b>/help</b> 또는 <b>/도움말</b> - 이 도움말을 표시합니다.\n\n"
             "━━━━━━━━━━━━━━━━━━━\n"
             "🔔 <b>자동 알림 기능</b>\n\n"
+            "🎚 <b>알람 수신 수준</b> (<code>/알람</code>)\n"
+            "버튼 클릭으로 받을 알람의 수준을 선택할 수 있습니다.\n"
+            "🔕 모두 끄기 / 🌍 시장 알림만 / ⭐ 중요 알림만 / 🔔 모든 알람\n\n"
             "📊 <b>가격 변동 알림</b>\n"
             "등록된 종목이 전일 종가 대비 <b>5%, 10%, 20%</b> 이상 변동하면 자동으로 알림을 보내드립니다.\n"
             "동일한 변동폭(임계값)과 방향(상승/하락) 조합은 하루에 1번만 알림이 전송됩니다.\n"
@@ -327,7 +369,7 @@ class TelegramBot:
             "📉 <b>이동평균선 이탈/회복 알림</b>\n"
             "등록된 종목이 <b>20일선, 60일선, 120일선</b>을 이탈하거나 다시 회복하면 자동으로 알림을 보내드립니다.\n"
             "각 이평선은 서로 다른 주기(단기/중기/장기)의 추세 전환 신호로 활용됩니다.\n"
-            "동일한 이평선 알림은 상태가 바뀔 때(이탈→회복 또는 회복→이탈)마다 전송됩니다.\n\n"
+            "동일한 신호는 하루에 1번만 전송됩니다. (하루에 여러 번 반복되어도 1번만 알림)\n\n"
             "🇺🇸 <b>미국장 마감 요약 (매일 5~6시)</b>\n"
             "매일 미국장이 끝난 후 (한국 시간 오전 5~6시 경) 당일 시장 흐름을 요약하여 자동으로 전송합니다.\n"
             "공포탐욕지수, VIX, 주요 지수, 환율 등을 확인하고 하루를 마무리하세요!\n\n"
@@ -969,6 +1011,110 @@ class TelegramBot:
         
         # 시장 국면 표시
         market_regime = analysis.get("market_regime", "RANGING")
+    # ================================================================
+    # 알람 수신 수준 설정 (/alarms, /알람)
+    # ================================================================
+
+    def _build_alarm_settings_text(self):
+        """알람 수신 수준 설정 화면의 안내 텍스트를 생성합니다."""
+        return (
+            "<b>🔔 알람 수신 수준 설정</b>\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            "아래 버튼을 눌러 받고 싶은 알람의 수준을 선택하세요.\n\n"
+            "🔕 <b>모든 알람 받지 않음</b>\n"
+            "<i>자동 알람을 완전히 끕니다.</i>\n\n"
+            "🌍 <b>시장 알림만</b>\n"
+            "<i>장 마감 요약(미국/한국), 주간 리포트, 극단적 시장 조건,\n"
+            "지수 최고치 돌파 등 종목과 무관한 시장 메시지만 받습니다.</i>\n\n"
+            "⭐ <b>중요 알림 + 시장 알림</b>\n"
+            "<i>시장 알림에 더해 개별 종목의 정말 중요한 알림만 받습니다.\n"
+            "(STRONG BUY/SELL 권장, 전일 종가 대비 급등락, 역대/52주 최고가 돌파)\n"
+            "→ 20일선 돌파 등 잦은 기술적 신호 알림은 받지 않습니다.</i>\n\n"
+            "🔔 <b>모든 알람 받기</b>\n"
+            "<i>기술적 지표 신호를 포함한 모든 자동 알람을 받습니다.</i>\n"
+        )
+
+    def _build_alarm_keyboard(self, current_level=None):
+        """알람 수신 수준 인라인 키보드를 생성합니다. 현재 설정에는 ✅를 표시합니다."""
+        if current_level is None:
+            current_level = database.get_chat_alert_level(0)
+        rows = []
+        for level in database.ALERT_LEVELS:
+            label = database.ALERT_LEVEL_LABELS.get(level, level)
+            if level == current_level:
+                label = f"✅ {label}"
+            rows.append([{"text": label, "callback_data": f"alarm:{level}"}])
+        return {"inline_keyboard": rows}
+
+    def _handle_alarm_settings(self, chat_id, reply_to_message_id=None, message_thread_id=None):
+        """
+        알람 수신 수준 설정 명령어.
+        사용법: /alarms 또는 /알람 → 인라인 버튼으로 수신 수준 선택
+        """
+        current_level = database.get_chat_alert_level(chat_id)
+        text = self._build_alarm_settings_text()
+        keyboard = self._build_alarm_keyboard(current_level)
+        current_label = database.ALERT_LEVEL_LABELS.get(current_level, current_level)
+        text += f"━━━━━━━━━━━━━━━━━━━\n<b>현재 설정:</b> {current_label}"
+        self.send_message(
+            chat_id,
+            text,
+            reply_to_message_id=reply_to_message_id,
+            message_thread_id=message_thread_id,
+            reply_markup=keyboard
+        )
+
+    def _handle_callback_query(self, callback_query):
+        """
+        인라인 키보드 버튼 클릭(callback query)을 처리합니다.
+        - data 형식: "alarm:<LEVEL>" (LEVEL ∈ OFF/MARKET/IMPORTANT/ALL)
+        """
+        callback_query_id = callback_query.get("id")
+        data = callback_query.get("data", "")
+        message = callback_query.get("message") or {}
+        chat_id = message.get("chat", {}).get("id")
+        message_id = message.get("message_id")
+
+        try:
+            if not data.startswith("alarm:") or not chat_id:
+                return
+
+            level = data.split(":", 1)[1].strip().upper()
+            if level not in database.ALERT_LEVELS:
+                self.answer_callback_query(callback_query_id, text="⚠️ 알 수 없는 설정입니다.")
+                return
+
+            database.set_chat_alert_level(chat_id, level)
+            level_label = database.ALERT_LEVEL_LABELS.get(level, level)
+
+            # 버튼 클릭 피드백 (상단 알림)
+            feedback = {
+                "OFF": "🔕 모든 자동 알람이 꺼졌습니다.",
+                "MARKET": "🌍 시장 알림만 받도록 설정했습니다.",
+                "IMPORTANT": "⭐ 중요 알림 + 시장 알림을 받도록 설정했습니다.",
+                "ALL": "🔔 모든 자동 알람을 받도록 설정했습니다.",
+            }.get(level, f"✅ {level_label} (으)로 설정했습니다.")
+            self.answer_callback_query(callback_query_id, text=feedback)
+
+            # 설정 메시지를 현재 상태가 반영된 내용으로 갱신
+            if message_id:
+                new_text = self._build_alarm_settings_text()
+                new_text += f"━━━━━━━━━━━━━━━━━━━\n<b>현재 설정:</b> {level_label}"
+                self.edit_message_text(
+                    chat_id,
+                    message_id,
+                    new_text,
+                    reply_markup=self._build_alarm_keyboard(level)
+                )
+        except Exception as e:
+            print(f"Error handling callback query: {e}")
+            if callback_query_id:
+                try:
+                    self.answer_callback_query(callback_query_id, text="⚠️ 설정 변경에 실패했습니다.")
+                except Exception:
+                    pass
+
+    def _handle_alerts(self, chat_id, arg, reply_to_message_id=None, message_thread_id=None):
         regime_label = {
             "TRENDING_UP": "상승 추세장 📈",
             "TRENDING_DOWN": "하락 추세장 📉",
@@ -1014,10 +1160,14 @@ class TelegramBot:
         if arg_lower in ("", "status", "상태", "현재"):
             enabled = database.get_chat_alerts_enabled(chat_id)
             state_text = "켜짐 ✅" if enabled else "꺼짐 🔕"
+            level = database.get_chat_alert_level(chat_id)
+            level_label = database.ALERT_LEVEL_LABELS.get(level, level)
             self.send_message(
                 chat_id,
                 f"🔔 현재 자동 알림 상태: <b>{state_text}</b>\n"
-                "사용법: <code>/alerts on</code> 또는 <code>/alerts off</code>",
+                f"<b>수신 수준:</b> {level_label}\n"
+                "사용법: <code>/alerts on</code> 또는 <code>/alerts off</code>\n"
+                "💡 세부 수준 선택은 <code>/알람</code> 을 입력하세요!",
                 reply_to_message_id=reply_to_message_id,
                 message_thread_id=message_thread_id
             )
@@ -1036,10 +1186,13 @@ class TelegramBot:
 
         if arg_lower in ("on", "켜기", "enable", "true", "1"):
             database.set_chat_alerts_enabled(chat_id, True)
+            level = database.get_chat_alert_level(chat_id)
+            level_label = database.ALERT_LEVEL_LABELS.get(level, level)
             self.send_message(
                 chat_id,
                 "🔔 자동 알림이 켜졌습니다.\n"
-                "이제 변동폭/과열/시장 알림을 받게 됩니다.",
+                f"<b>현재 수신 수준:</b> {level_label}\n"
+                "💡 세부 수준 선택은 <code>/알람</code> 을 입력하세요!",
                 reply_to_message_id=reply_to_message_id,
                 message_thread_id=message_thread_id
             )

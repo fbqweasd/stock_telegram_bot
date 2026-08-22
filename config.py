@@ -35,7 +35,8 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL", 3600))
 # DB path inside data directory
 DB_PATH = os.environ.get("DB_PATH", "data/stock_bot.db")
-# 매수/매도 권장 알림: 한 종목당 하루 최대 알림 횟수 (기본 3회)
+# [Deprecated] 매수/매도 권장 알림은 이제 유형(STRONG_BUY/STRONG_SELL)당 하루 1회만 전송됩니다.
+# 이 설정은 하위 호환성을 위해 남겨두었으며 더 이상 사용되지 않습니다.
 MAX_DAILY_RECOMMENDATION_ALERTS = int(os.environ.get("MAX_DAILY_RECOMMENDATION_ALERTS", 3))
 
 # Ensure the data directory exists
