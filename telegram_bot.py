@@ -1166,8 +1166,7 @@ class TelegramBot:
                 chat_id,
                 f"🔔 현재 자동 알림 상태: <b>{state_text}</b>\n"
                 f"<b>수신 수준:</b> {level_label}\n"
-                "사용법: <code>/alerts on</code> 또는 <code>/alerts off</code>\n"
-                "💡 세부 수준 선택은 <code>/알람</code> 을 입력하세요!",
+                "사용법: <code>/alerts on</code> 또는 <code>/alerts off</code>",
                 reply_to_message_id=reply_to_message_id,
                 message_thread_id=message_thread_id
             )
@@ -1191,8 +1190,7 @@ class TelegramBot:
             self.send_message(
                 chat_id,
                 "🔔 자동 알림이 켜졌습니다.\n"
-                f"<b>현재 수신 수준:</b> {level_label}\n"
-                "💡 세부 수준 선택은 <code>/알람</code> 을 입력하세요!",
+                f"<b>현재 수신 수준:</b> {level_label}",
                 reply_to_message_id=reply_to_message_id,
                 message_thread_id=message_thread_id
             )

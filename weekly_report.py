@@ -158,8 +158,6 @@ def format_weekly_report(data):
         change_pct = vix.get("change_pct", 0)
         lines.append(f"• 📊 VIX: {value:.2f} ({change_pct:+.2f}%)")
 
-    lines.append("\n━━━━━━━━━━━━━━━━━━━")
-    lines.append("<i>💡 /indices 명령어로 상세 시장 현황을 확인하세요.</i>")
 
     return "\n".join(lines)
 

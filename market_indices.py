@@ -1126,9 +1126,7 @@ def format_us_market_close_report(data):
         lines.append("<b>⚠️ 극단 조건 경고</b>")
         for alert_type, message in extreme_alerts:
             lines.append(f"• {message}")
-    
-    lines.append("\n━━━━━━━━━━━━━━━━━━━")
-    lines.append("<i>💡 /indices 명령어로 상세 시장 현황을 확인하세요.</i>")
+
     
     return "\n".join(lines)
 
@@ -1211,8 +1209,6 @@ def format_weekly_report(data):
         change_pct = vix.get("change_pct", 0)
         lines.append(f"• 📊 VIX: {value:.2f} ({change_pct:+.2f}%)")
 
-    lines.append("\n━━━━━━━━━━━━━━━━━━━")
-    lines.append("<i>💡 /indices 명령어로 상세 시장 현황을 확인하세요.</i>")
 
     return "\n".join(lines)
 
@@ -1288,8 +1284,6 @@ def format_korea_market_close_report(data):
 
                 lines.append(f"• {emoji} {name}: {value:,.2f} ({sign}{change_pct:.2f}%)")
 
-    lines.append("\n━━━━━━━━━━━━━━━━━━━")
-    lines.append("<i>💡 /indices 명령어로 상세 시장 현황을 확인하세요.</i>")
 
     return "\n".join(lines)
 

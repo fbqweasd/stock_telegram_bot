@@ -300,8 +300,7 @@ class AlertScheduler:
             for alert_type, message in extreme_alerts:
                 alert_text += f"{message}\n"
             
-            alert_text += "\n━━━━━━━━━━━━━━━━━━━\n"
-            alert_text += "<i>💡 /indices 명령어로 상세 현황을 확인하세요.</i>"
+
             
             # 모든 구독자에게 전송
             all_subscriptions = database.get_all_subscriptions()
@@ -376,9 +375,6 @@ class AlertScheduler:
             for breakout_type, message in breakouts:
                 alert_text += f"{message}\n"
 
-            alert_text += "\n━━━━━━━━━━━━━━━━━━━\n"
-            alert_text += "<i>💡 /indices 명령어로 상세 현황을 확인하세요.</i>"
-
             # 모든 구독자에게 전송 (하루 1번 제한)
             all_subscriptions = database.get_all_subscriptions()
             sent_to_chats = set()
@@ -442,9 +438,7 @@ class AlertScheduler:
                     f"━━━━━━━━━━━━━━━━━━━\n"
                     f"💵 현재가: <b>{current_price:.2f} {currency}</b>\n"
                     f"📈 기존 역대 최고가: {all_time_high:.2f} {currency} ({all_time_high_date or 'N/A'})\n"
-                    f"📊 돌파 폭: <b>+{pct_above:.2f}%</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━\n"
-                    f"💡 상세 분석 리포트는 <code>/predict {ticker}</code> 를 입력하세요!"
+                    f"📊 돌파 폭: <b>+{pct_above:.2f}%</b>"
                 )
 
                 for chat_id in subscribers:
@@ -473,9 +467,7 @@ class AlertScheduler:
                     f"━━━━━━━━━━━━━━━━━━━\n"
                     f"💵 현재가: <b>{current_price:.2f} {currency}</b>\n"
                     f"📈 기존 52주 최고가: {week52_high:.2f} {currency} ({week52_high_date or 'N/A'})\n"
-                    f"📊 돌파 폭: <b>+{pct_above:.2f}%</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━\n"
-                    f"💡 상세 분석 리포트는 <code>/predict {ticker}</code> 를 입력하세요!"
+                    f"📊 돌파 폭: <b>+{pct_above:.2f}%</b>"
                 )
 
                 for chat_id in subscribers:
@@ -722,8 +714,7 @@ class AlertScheduler:
                         f"<b>🔔 {event_info['title']}</b>\n"
                         f"종목: <b>{stock_name}</b> ({ticker})\n"
                         f"시간: <code>{time.strftime('%Y-%m-%d %H:%M:%S')}</code>\n\n"
-                        f"{event_info['msg']}\n\n"
-                        f"💡 실시간 차트 예측 리포트는 <code>/predict {ticker}</code> 를 입력하여 조회하세요!"
+                        f"{event_info['msg']}"
                     )
                     
                     # Get chat topic setting for this chat
@@ -812,11 +803,6 @@ class AlertScheduler:
                     f"{signal_summary}\n"
                 )
 
-            alert_text += (
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"💡 상세 분석 리포트는 <code>/predict {ticker}</code> 를 입력하세요!"
-            )
-
             # 각 구독자에게 전송 (유형당 하루 1회 제한)
             for chat_id in subscribers:
                 # 알람 수신 수준 확인 (개별 종목 중요 알림)
@@ -898,9 +884,7 @@ class AlertScheduler:
                     f"━━━━━━━━━━━━━━━━━━━\n"
                     f"💵 현재가: <b>{current_price:.2f} {currency}</b>\n"
                     f"📌 전일 종가: {prev_close:.2f} {currency}\n"
-                    f"📊 변동: {direction_label} <b>{abs_pct:.2f}%</b> (기준: {triggered_threshold}%)\n"
-                    f"━━━━━━━━━━━━━━━━━━━\n"
-                    f"💡 상세 분석 리포트는 <code>/predict {ticker}</code> 를 입력하세요!"
+                    f"📊 변동: {direction_label} <b>{abs_pct:.2f}%</b> (기준: {triggered_threshold}%)"
                 )
 
                 topic_id = database.get_chat_topic(chat_id)
