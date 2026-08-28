@@ -71,6 +71,23 @@ class AlertScheduler:
                     break
                 time.sleep(1)
 
+    def _send_alert_with_topic(self, chat_id, text):
+        """
+        저장된 알림 토픽(message_thread_id)으로 메시지를 보내고,
+        해당 토픽(삭제/닫힘/권한 문제 등)으로 전송이 실패하면 유실 방지를 위해
+        토픽 없이(General) 재전송을 시도합니다.
+        성공 시 Telegram message_id를, 최종 실패 시 None을 반환합니다.
+        """
+        topic_id = database.get_chat_topic(chat_id)
+        sent = self.bot.send_message(chat_id, text, message_thread_id=topic_id)
+        if sent is None:
+            if topic_id is not None:
+                # 설정된 토픽이 더 이상 유효하지 않은 경우 -> General(기본)로 폴백
+                print(f"⚠️ 토픽({topic_id})으로 전송 실패 → 토픽 없이 재시도 (chat: {chat_id})")
+                sent = self.bot.send_message(chat_id, text)
+            else:
+                print(f"⚠️ 알림 전송 실패 (chat: {chat_id})")
+        return sent
     def _check_weekly_report(self):
         """
         매주 월요일 아침(한국 시간 08:00~09:59)에 지난주 주간 시장 요약 리포트를 전송합니다.
@@ -118,8 +135,9 @@ class AlertScheduler:
                 if not database.should_send_alert(chat_id, is_market_wide=True):
                     continue
 
-                topic_id = database.get_chat_topic(chat_id)
-                self.bot.send_message(chat_id, report_text, message_thread_id=topic_id)
+                sent = self._send_alert_with_topic(chat_id, report_text)
+                if sent is None:
+                    continue
                 database.record_weekly_report_send(chat_id, week_start)
                 sent_to_chats.add(chat_id)
 
@@ -178,8 +196,9 @@ class AlertScheduler:
                 if not database.should_send_alert(chat_id, is_market_wide=True):
                     continue
                 
-                topic_id = database.get_chat_topic(chat_id)
-                self.bot.send_message(chat_id, report_text, message_thread_id=topic_id)
+                sent = self._send_alert_with_topic(chat_id, report_text)
+                if sent is None:
+                    continue
                 sent_to_chats.add(chat_id)
             
             self.last_us_market_close_alert_date = today_str
@@ -240,8 +259,9 @@ class AlertScheduler:
                 if not database.should_send_alert(chat_id, is_market_wide=True):
                     continue
 
-                topic_id = database.get_chat_topic(chat_id)
-                self.bot.send_message(chat_id, report_text, message_thread_id=topic_id)
+                sent = self._send_alert_with_topic(chat_id, report_text)
+                if sent is None:
+                    continue
                 sent_to_chats.add(chat_id)
 
             self.last_korea_market_close_alert_date = today_str
@@ -313,8 +333,9 @@ class AlertScheduler:
                 if not database.should_send_alert(chat_id, is_market_wide=True):
                     continue
                 
-                topic_id = database.get_chat_topic(chat_id)
-                self.bot.send_message(chat_id, alert_text, message_thread_id=topic_id)
+                sent = self._send_alert_with_topic(chat_id, alert_text)
+                if sent is None:
+                    continue
                 sent_to_chats.add(chat_id)
             
             self.last_extreme_check_date = today_str
@@ -390,8 +411,9 @@ class AlertScheduler:
                 if database.has_sent_high_breakout_alert(chat_id, "INDEX", "ALL", today_str):
                     continue
 
-                topic_id = database.get_chat_topic(chat_id)
-                self.bot.send_message(chat_id, alert_text, message_thread_id=topic_id)
+                sent = self._send_alert_with_topic(chat_id, alert_text)
+                if sent is None:
+                    continue
                 database.record_high_breakout_alert(chat_id, "INDEX", "ALL", today_str, 0)
                 sent_to_chats.add(chat_id)
 
@@ -448,8 +470,9 @@ class AlertScheduler:
                     if database.has_sent_high_breakout_alert(chat_id, ticker, "ALL_TIME_HIGH", today_str):
                         continue
 
-                    topic_id = database.get_chat_topic(chat_id)
-                    self.bot.send_message(chat_id, alert_text, message_thread_id=topic_id)
+                    sent = self._send_alert_with_topic(chat_id, alert_text)
+                    if sent is None:
+                        continue
                     database.record_high_breakout_alert(chat_id, ticker, "ALL_TIME_HIGH", today_str, current_price)
 
             # 52주 최고가 돌파 체크 (역대 최고가와 다를 때만)
@@ -477,8 +500,9 @@ class AlertScheduler:
                     if database.has_sent_high_breakout_alert(chat_id, ticker, "WEEK52_HIGH", today_str):
                         continue
 
-                    topic_id = database.get_chat_topic(chat_id)
-                    self.bot.send_message(chat_id, alert_text, message_thread_id=topic_id)
+                    sent = self._send_alert_with_topic(chat_id, alert_text)
+                    if sent is None:
+                        continue
                     database.record_high_breakout_alert(chat_id, ticker, "WEEK52_HIGH", today_str, current_price)
 
         except Exception as e:
@@ -717,9 +741,9 @@ class AlertScheduler:
                         f"{event_info['msg']}"
                     )
                     
-                    # Get chat topic setting for this chat
-                    topic_id = database.get_chat_topic(chat_id)
-                    self.bot.send_message(chat_id, alert_text, message_thread_id=topic_id)
+                    sent = self._send_alert_with_topic(chat_id, alert_text)
+                    if sent is None:
+                        continue
                     # Register that we notified the user
                     database.set_last_signal(chat_id, ticker, sig_type, price_now)
                     # 하루 1회 제한 기록
@@ -813,8 +837,9 @@ class AlertScheduler:
                 if database.has_sent_recommendation_alert(chat_id, ticker, today_str, alert_type):
                     continue
 
-                topic_id = database.get_chat_topic(chat_id)
-                self.bot.send_message(chat_id, alert_text, message_thread_id=topic_id)
+                sent = self._send_alert_with_topic(chat_id, alert_text)
+                if sent is None:
+                    continue
                 database.record_recommendation_alert(chat_id, ticker, today_str, alert_type, current_price)
 
             print(f"📢 Recommendation alert sent for {ticker}: {recommendation}")
@@ -887,8 +912,9 @@ class AlertScheduler:
                     f"📊 변동: {direction_label} <b>{abs_pct:.2f}%</b> (기준: {triggered_threshold}%)"
                 )
 
-                topic_id = database.get_chat_topic(chat_id)
-                self.bot.send_message(chat_id, alert_text, message_thread_id=topic_id)
+                sent = self._send_alert_with_topic(chat_id, alert_text)
+                if sent is None:
+                    continue
                 database.record_daily_alert(chat_id, ticker, today_str, triggered_threshold, direction)
 
                 # Update last price and last alert price
