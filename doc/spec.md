@@ -147,7 +147,6 @@ _process_ticker_alerts()
 | `TELEGRAM_BOT_TOKEN` | (필수) | 봇 토큰, 없으면 시작 거부 |
 | `CHECK_INTERVAL` | 3600 | 구독 종목 스캔 주기(초), 기본 1시간 |
 | `DB_PATH` | data/stock_bot.db | SQLite 경로 (부모 디렉터리 자동 생성) |
-| `MAX_DAILY_RECOMMENDATION_ALERTS` | 3 | 종목당 하루 최대 STRONG 알림 횟수 |
 
 > `.env` 파서는 외부 `python-dotenv` 없이 커스텀 구현 (주석/`#`, `'`/`"` 제거, `=` 분리).
 

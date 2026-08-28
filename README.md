@@ -268,7 +268,6 @@ stock_bot/
 - **🟢🔥 STRONG BUY**: 무조건 매수해야 하는 상황 → **권장 매수 가격** 제시
 - **🔴🔥 STRONG SELL**: 무조건 매도해야 하는 상황 → **권장 매도 가격** 제시
 - **유형당 하루 1회**만 전송됩니다 (STRONG BUY/SELL 각각 하루 최대 1회, 과도한 알림 방지)
-- 기존의 "하루 최대 3회" 제한(`MAX_DAILY_RECOMMENDATION_ALERTS`)은 더 이상 사용되지 않습니다
 
 ---
 

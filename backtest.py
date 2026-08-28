@@ -16,7 +16,6 @@
 
 import argparse
 import json
-import math
 import sys
 import time
 import urllib.parse
@@ -192,7 +191,6 @@ def run_backtest(data, horizon=5, step=1, min_data_points=60,
     lows = data["lows"]
     opens = data["opens"]
     volumes = data["volumes"]
-    timestamps = data["timestamps"]
     dates = data["dates"]
     ticker = data["ticker"]
     currency = data["currency"]
@@ -307,7 +305,6 @@ def run_backtest(data, horizon=5, step=1, min_data_points=60,
             shares = capital / price
             position = shares
             entry_price = price
-            entry_index = i
             capital = 0
             trades.append({
                 "type": "BUY",

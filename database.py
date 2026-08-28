@@ -1,5 +1,4 @@
 import sqlite3
-import os
 from config import DB_PATH
 
 def get_connection():
@@ -324,27 +323,6 @@ def clear_all_signals_for_ticker(chat_id, ticker):
         conn.commit()
 
 # Price tracking functions for % change alerts
-def get_last_price_info(chat_id, ticker):
-    """
-    Returns last known price and alert threshold for a user's ticker subscription.
-    Returns: {last_price, last_alert_price, alert_threshold_pct} or None
-    """
-    ticker = ticker.upper().strip()
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT last_price, last_alert_price, alert_threshold_pct FROM last_prices WHERE chat_id = ? AND ticker = ?",
-            (chat_id, ticker)
-        )
-        row = cursor.fetchone()
-        if row:
-            return {
-                "last_price": row[0],
-                "last_alert_price": row[1],
-                "alert_threshold_pct": row[2]
-            }
-        return None
-
 def set_last_price(chat_id, ticker, price):
     """
     Updates the last known price for a ticker.
@@ -353,65 +331,10 @@ def set_last_price(chat_id, ticker, price):
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT OR REPLACE INTO last_prices (chat_id, ticker, last_price, last_alert_price, alert_threshold_pct, updated_at)
-            VALUES (?, ?, ?, COALESCE((SELECT last_alert_price FROM last_prices WHERE chat_id = ? AND ticker = ?), NULL),
-                    COALESCE((SELECT alert_threshold_pct FROM last_prices WHERE chat_id = ? AND ticker = ?), 5.0),
-                    CURRENT_TIMESTAMP)
-        """, (chat_id, ticker, price, chat_id, ticker, chat_id, ticker))
+            INSERT OR REPLACE INTO last_prices (chat_id, ticker, last_price, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        """, (chat_id, ticker, price))
         conn.commit()
-
-def set_last_alert_price(chat_id, ticker, price):
-    """
-    Updates the price at which the last price change alert was sent.
-    """
-    ticker = ticker.upper().strip()
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE last_prices SET last_alert_price = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE chat_id = ? AND ticker = ?
-        """, (price, chat_id, ticker))
-        conn.commit()
-
-def set_alert_threshold(chat_id, ticker, threshold_pct):
-    """
-    Sets a custom price change alert threshold (%) for a user's ticker.
-    """
-    ticker = ticker.upper().strip()
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT OR REPLACE INTO last_prices (chat_id, ticker, last_price, last_alert_price, alert_threshold_pct, updated_at)
-            VALUES (?, ?,
-                    COALESCE((SELECT last_price FROM last_prices WHERE chat_id = ? AND ticker = ?), NULL),
-                    COALESCE((SELECT last_alert_price FROM last_prices WHERE chat_id = ? AND ticker = ?), NULL),
-                    ?,
-                    CURRENT_TIMESTAMP)
-        """, (chat_id, ticker, chat_id, ticker, chat_id, ticker, threshold_pct))
-        conn.commit()
-        return cursor.rowcount > 0
-
-def get_alert_threshold(chat_id, ticker):
-    """
-    Gets the custom price change alert threshold (%) for a user's ticker.
-    Returns default 5.0 if not set.
-    """
-    ticker = ticker.upper().strip()
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT alert_threshold_pct FROM last_prices WHERE chat_id = ? AND ticker = ?",
-            (chat_id, ticker)
-        )
-        row = cursor.fetchone()
-        if row and row[0] is not None:
-            return row[0]
-        return 5.0
-
-# ================================================================
-# Daily price alert tracking (전일 종가 기준 5%/10%/20% 변동 알림)
-# 하루에 1번만 알림을 보내도록 관리
-# ================================================================
 
 def get_daily_alerts_for_date(chat_id, ticker, alert_date):
     """
@@ -427,27 +350,6 @@ def get_daily_alerts_for_date(chat_id, ticker, alert_date):
         )
         rows = cursor.fetchall()
         return [{"threshold_pct": row[0], "direction": row[1]} for row in rows]
-
-def get_daily_alerts_for_ticker_date(ticker, alert_date):
-    """
-    Returns all chat_ids that have already received a daily alert for a given ticker/date.
-    Returns a dict: {chat_id: [threshold_pct, ...]}
-    """
-    ticker = ticker.upper().strip()
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT chat_id, threshold_pct, direction FROM daily_price_alerts WHERE ticker = ? AND alert_date = ?",
-            (ticker, alert_date)
-        )
-        rows = cursor.fetchall()
-        result = {}
-        for row in rows:
-            chat_id = row[0]
-            if chat_id not in result:
-                result[chat_id] = []
-            result[chat_id].append({"threshold_pct": row[1], "direction": row[2]})
-        return result
 
 def record_daily_alert(chat_id, ticker, alert_date, threshold_pct, direction):
     """
@@ -495,8 +397,6 @@ def record_weekly_report_send(chat_id, week_start):
         return cursor.rowcount > 0
 
 
-# ================================================================
-# Chat topic settings (단체방 알림 토픽 설정)
 # ================================================================
 # Chat topic settings (단체방 알림 토픽 설정)
 # ================================================================

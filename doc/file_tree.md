@@ -25,7 +25,7 @@ stock_bot/
 │  # =========================================
 ├── config.py                     # [40줄]  .env 로드 & 전역 설정 정의
 │                                 #   - TELEGRAM_BOT_TOKEN, CHECK_INTERVAL
-│                                 #   - DB_PATH, MAX_DAILY_RECOMMENDATION_ALERTS
+│                                 #   - DB_PATH
 │
 ├── database.py                   # [540줄] SQLite 데이터베이스 계층 (표준 sqlite3)
 │                                 #   - 테이블: subscriptions, last_signals, last_prices,
@@ -37,7 +37,7 @@ stock_bot/
 ├── indicators.py                 # [368줄] 기술적 지표 계산 (외부 라이브러리 없음)
 │                                 #   - calculate_sma / calculate_ema
 │                                 #   - calculate_bollinger_bands / calculate_rsi (Wilder)
-│                                 #   - calculate_macd / calculate_momentum / calculate_atr
+│                                 #   - calculate_macd / calculate_atr
 │                                 #   - calculate_volume_trend / find_support_resistance
 │                                 #   - detect_market_regime (추세장/횡보장)
 │

@@ -152,24 +152,6 @@ def calculate_macd(prices, fast=12, slow=26, signal=9):
     return macd_line, signal_line, histogram
 
 
-def calculate_momentum(prices, period=10):
-    """
-    Calculates price momentum (rate of change).
-    Returns a list of momentum values. First 'period' elements will be None.
-    """
-    if len(prices) < period + 1:
-        return [None] * len(prices)
-    
-    momentum = [None] * len(prices)
-    for i in range(period, len(prices)):
-        if prices[i - period] != 0:
-            momentum[i] = ((prices[i] - prices[i - period]) / prices[i - period]) * 100
-        else:
-            momentum[i] = 0
-    
-    return momentum
-
-
 def calculate_atr(highs, lows, closes, period=14):
     """
     Calculates Average True Range (ATR) using Wilder's Smoothing.

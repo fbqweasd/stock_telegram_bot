@@ -1,6 +1,5 @@
 import time
 import sys
-import os
 import database
 from config import TELEGRAM_BOT_TOKEN, DB_PATH, CHECK_INTERVAL
 from telegram_bot import TelegramBot

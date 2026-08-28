@@ -1,5 +1,4 @@
 import urllib.request
-import urllib.parse
 import json
 import ssl
 import time
@@ -212,9 +211,7 @@ class TelegramBot:
         message_id = message.get("message_id")
         
         # Topics(스레드)가 활성화된 그룹에서 메시지가 속한 스레드 ID
-        # is_topic_message: Topics 그룹 여부
         # message_thread_id: 스레드 ID (일반 메시지면 None)
-        is_topic_message = message.get("is_topic_message", False)
         message_thread_id = message.get("message_thread_id")
         
         if not chat_id or not text:
@@ -387,7 +384,7 @@ class TelegramBot:
             "권장 매수/매도 가격과 함께 자동으로 알림을 보내드립니다.\n"
             "• 🟢🔥 <b>STRONG BUY</b>: 무조건 매수해야 하는 상황 → 권장 매수 가격 제시\n"
             "• 🔴🔥 <b>STRONG SELL</b>: 무조건 매도해야 하는 상황 → 권장 매도 가격 제시\n"
-            "한 종목당 하루 최대 <b>3회</b>까지 알림이 전송됩니다. (과도한 알림 방지)\n\n"
+            "STRONG BUY/STRONG SELL 각 유형당 하루 <b>1회</b>씩 전송됩니다. (과도한 알림 방지)\n\n"
             "🏆 <b>최고치 돌파 알림</b>\n"
             "등록된 종목 또는 주요 지수(S&P 500, NASDAQ, DOW, KOSPI, KOSDAQ)가\n"
             "<b>역대 최고가</b> 또는 <b>52주 최고가</b>를 돌파하면 자동으로 알림을 보내드립니다.\n"
@@ -732,30 +729,7 @@ class TelegramBot:
             bb_status = "상단 부근 (매도 신호)"
         else:
             bb_status = "중앙 (안정적)"
-            
-        # report_text += (
-        #     f"\n<b>📈 주요 실시간 보조지표 상세</b>\n"
-        #     f"• <b>RSI (14일):</b> {rsi_val:.1f} → {rsi_status}\n"
-        #     f"  RSI는 0~100 사이 값으로, 70 이상이면 과매수(고평가), 30 이하면 과매도(저평가)를 의미합니다.\n"
-        #     f"• <b>MACD:</b> {macd_val:.4f} / Histogram: {macd_hist:.4f} → {macd_status}\n"
-        #     f"  MACD가 시그널선 위에 있고 히스토그램이 양수면 상승 추세를 나타냅니다.\n"
-        #     f"• <b>모멘텀 (10일):</b> {indicators['momentum']:.2f}%\n"
-        #     f"  10일 전 가격 대비 현재 가격의 변화율로, 양수면 상승 추세입니다.\n"
-        #     f"• <b>볼린저 밴드:</b> {bb_lower:.2f} ~ {bb_upper:.2f} {currency}\n"
-        #     f"  현재가 위치: 밴드 {bb_position:.0f}% 지점 → {bb_status}\n"
-        #     f"• <b>20일선 vs 50일선:</b> {sma20:.2f} vs {sma50:.2f} {currency} → {sma_status}\n"
-        #     f"  단기 이평선이 장기 이평선 위에 있으면 상승 추세입니다.\n"
-        #     f"• <b>지지선/저항선:</b> {indicators['support']:.2f} / {indicators['resistance']:.2f} {currency}\n"
-        #     f"  지지선은 최근 20일 최저가, 저항선은 최근 20일 최고가 기준입니다.\n"
-        #     f"• <b>거래량 동향:</b> {indicators['volume_ratio']:.2f}x (1.0 = 평균)\n"
-        #     f"  1.0보다 크면 최근 거래량이 평소보다 많다는 의미입니다.\n"
-        #     f"━━━━━━━━━━━━━━━━━━━\n"
-        #     f"<b>💡 예측 로직 설명</b>\n"
-        #     f"이 예측은 8가지 기술적 지표(RSI, MACD, 모멘텀, 볼린저밴드, SMA, EMA, 거래량, 지지/저항)를\n"
-        #     f"종합적으로 분석하여 각 지표에 가중치를 부여한 점수 기반 시스템입니다.\n"
-        #     f"각 지표는 -2.0 ~ +2.0 범위의 점수를 기여하며, 총점을 바탕으로 최종 추천 등급이 결정됩니다.\n"
-        # )
-        
+
         # 결과 전송 후 로딩 메시지 삭제
         self.send_message(chat_id, report_text, reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
         if loading_msg_id:
@@ -1011,6 +985,43 @@ class TelegramBot:
         
         # 시장 국면 표시
         market_regime = analysis.get("market_regime", "RANGING")
+
+        regime_label = {
+            "TRENDING_UP": "상승 추세장 📈",
+            "TRENDING_DOWN": "하락 추세장 📉",
+            "RANGING": "횡보장 ↔️"
+        }.get(market_regime, "횡보장 ↔️")
+
+        # ATR/손절가 표시
+        atr_val = indicators.get('atr', 0)
+        atr_pct = indicators.get('atr_pct', 0)
+        stop_loss = analysis.get('stop_loss', 0)
+
+        # 지표 요약 추가
+        report_text += (
+            f"\n<b>📈 주요 보조지표 ({candle_desc} 기준)</b>\n"
+            f"• <b>시장 국면:</b> {regime_label}\n"
+            f"• <b>{rsi_desc}:</b> {rsi_val:.1f} → {rsi_status}\n"
+            f"• <b>MACD:</b> {macd_val:.4f} / Histogram: {macd_hist:.4f} → {macd_status}\n"
+            f"• <b>{bb_desc}:</b> {bb_lower:.2f} ~ {bb_upper:.2f} {currency}\n"
+            f"  현재 위치: 밴드 {bb_position:.0f}% → {bb_status}\n"
+            f"• <b>{sma_desc}:</b> {sma20:.2f} vs {sma50:.2f} → {sma_status}\n"
+        )
+
+        report_text += (
+            f"• <b>{sr_desc}:</b> {indicators['support']:.2f} / {indicators['resistance']:.2f} {currency}\n"
+            f"• <b>거래량 동향:</b> {indicators['volume_ratio']:.2f}x\n"
+            f"• <b>ATR (변동성):</b> {atr_val:.2f} ({atr_pct:.1f}%)\n"
+        )
+
+        # 손절가 표시
+        if stop_loss > 0:
+            report_text += (
+                f"🛑 <b>손절가:</b> <code>{stop_loss:.2f} {currency}</code> (ATR 1.5배 기준)\n"
+            )
+
+        return report_text
+
     # ================================================================
     # 알람 수신 수준 설정 (/alarms, /알람)
     # ================================================================
@@ -1113,43 +1124,6 @@ class TelegramBot:
                     self.answer_callback_query(callback_query_id, text="⚠️ 설정 변경에 실패했습니다.")
                 except Exception:
                     pass
-
-    def _handle_alerts(self, chat_id, arg, reply_to_message_id=None, message_thread_id=None):
-        regime_label = {
-            "TRENDING_UP": "상승 추세장 📈",
-            "TRENDING_DOWN": "하락 추세장 📉",
-            "RANGING": "횡보장 ↔️"
-        }.get(market_regime, "횡보장 ↔️")
-        
-        # ATR/손절가 표시
-        atr_val = indicators.get('atr', 0)
-        atr_pct = indicators.get('atr_pct', 0)
-        stop_loss = analysis.get('stop_loss', 0)
-        
-        # 지표 요약 추가
-        report_text += (
-            f"\n<b>📈 주요 보조지표 ({candle_desc} 기준)</b>\n"
-            f"• <b>시장 국면:</b> {regime_label}\n"
-            f"• <b>{rsi_desc}:</b> {rsi_val:.1f} → {rsi_status}\n"
-            f"• <b>MACD:</b> {macd_val:.4f} / Histogram: {macd_hist:.4f} → {macd_status}\n"
-            f"• <b>{bb_desc}:</b> {bb_lower:.2f} ~ {bb_upper:.2f} {currency}\n"
-            f"  현재 위치: 밴드 {bb_position:.0f}% → {bb_status}\n"
-            f"• <b>{sma_desc}:</b> {sma20:.2f} vs {sma50:.2f} → {sma_status}\n"
-        )
-        
-        report_text += (
-            f"• <b>{sr_desc}:</b> {indicators['support']:.2f} / {indicators['resistance']:.2f} {currency}\n"
-            f"• <b>거래량 동향:</b> {indicators['volume_ratio']:.2f}x\n"
-            f"• <b>ATR (변동성):</b> {atr_val:.2f} ({atr_pct:.1f}%)\n"
-        )
-        
-        # 손절가 표시
-        if stop_loss > 0:
-            report_text += (
-                f"🛑 <b>손절가:</b> <code>{stop_loss:.2f} {currency}</code> (ATR 1.5배 기준)\n"
-            )
-        
-        return report_text
 
     def _handle_alerts(self, chat_id, arg, reply_to_message_id=None, message_thread_id=None):
         """

@@ -14,9 +14,8 @@
 """
 
 import json
-import sys
+import os
 import time
-from datetime import datetime
 
 from backtest import fetch_long_history
 from predictor import predict_buy_sell_prices
@@ -48,7 +47,6 @@ def run_strong_alert_backtest(data, horizon=5, step=1, min_data_points=60,
     lows = data["lows"]
     opens = data["opens"]
     volumes = data["volumes"]
-    timestamps = data["timestamps"]
     dates = data["dates"]
     ticker = data["ticker"]
     currency = data["currency"]
@@ -138,7 +136,6 @@ def run_strong_alert_backtest(data, horizon=5, step=1, min_data_points=60,
     capital = initial_capital
     position = 0  # 보유 주식 수
     entry_price = 0
-    entry_index = 0
     trades = []
     equity_curve = []
     peak_equity = initial_capital
@@ -154,7 +151,6 @@ def run_strong_alert_backtest(data, horizon=5, step=1, min_data_points=60,
             shares = capital / price
             position = shares
             entry_price = price
-            entry_index = i
             capital = 0
             trades.append({
                 "type": "BUY",
@@ -484,7 +480,6 @@ def main():
 
     # JSON 저장
     output_file = "results/strong_alert_backtest_results.json"
-    import os
     os.makedirs("results", exist_ok=True)
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(all_results, f, ensure_ascii=False, indent=2)

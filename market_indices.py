@@ -13,7 +13,6 @@ import urllib.parse
 import json
 import ssl
 import time
-import re
 
 def _make_request(url, headers=None, retries=3, delay=2):
     """

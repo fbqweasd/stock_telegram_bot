@@ -243,5 +243,76 @@ class RecommendationAlertSchedulerTests(unittest.TestCase):
         self.mock_bot.send_message.assert_not_called()
 
 
+    def test_alert_not_recorded_when_send_fails(self):
+        """발송 실패(토픽 오류 등) 시 '보냄'으로 기록되지 않고 재시도 기회가 남아야 한다."""
+        stock_data = self._create_strong_buy_stock_data()
+        database.add_subscription(1, "TEST")
+
+        import time
+        kst_offset = 9 * 60 * 60
+        today_str = time.strftime("%Y-%m-%d", time.gmtime(time.time() + kst_offset))
+
+        # send_message가 실패(None)를 반환하도록 mock
+        self.mock_bot.send_message.return_value = None
+
+        with patch("scheduler.predictor.predict_buy_sell_prices") as mock_predict:
+            mock_predict.return_value = {
+                "ticker": "TEST",
+                "currency": "USD",
+                "current_price": 180.0,
+                "buy_target": 175.0,
+                "sell_target": 190.0,
+                "stop_loss": 170.0,
+                "recommendation": "STRONG BUY",
+                "confidence": 85,
+                "score": 4.5,
+                "signals": ["RSI 극단적 과매도 (강한 매수 신호)"],
+                "market_regime": "RANGING",
+                "indicators": {}
+            }
+            self.scheduler._check_recommendation_alerts("TEST", stock_data, [1])
+
+        # 발송이 실패했으므로 기록되어서는 안 됨 -> 다음 스캔에서 재시도 가능해야 함
+        self.assertFalse(database.has_sent_recommendation_alert(1, "TEST", today_str, "STRONG_BUY"))
+        self.assertGreaterEqual(self.mock_bot.send_message.call_count, 1)
+
+    def test_topic_fallback_to_general_when_topic_send_fails(self):
+        """설정 토픽 전송 실패 시 General(토픽 없이)로 폴백하고, 성공 시에만 기록해야 한다."""
+        stock_data = self._create_strong_buy_stock_data()
+        database.add_subscription(1, "TEST")
+        database.set_chat_topic(1, 999)  # 삭제/닫힘된 토픽을 가정
+
+        import time
+        kst_offset = 9 * 60 * 60
+        today_str = time.strftime("%Y-%m-%d", time.gmtime(time.time() + kst_offset))
+
+        # 첫 호출(토픽 사용) 실패, 두 번째 호출(토픽 없이 General) 성공
+        self.mock_bot.send_message.side_effect = [None, 12345]
+
+        with patch("scheduler.predictor.predict_buy_sell_prices") as mock_predict:
+            mock_predict.return_value = {
+                "ticker": "TEST",
+                "currency": "USD",
+                "current_price": 180.0,
+                "buy_target": 175.0,
+                "sell_target": 190.0,
+                "stop_loss": 170.0,
+                "recommendation": "STRONG BUY",
+                "confidence": 85,
+                "score": 4.5,
+                "signals": ["RSI 극단적 과매도 (강한 매수 신호)"],
+                "market_regime": "RANGING",
+                "indicators": {}
+            }
+            self.scheduler._check_recommendation_alerts("TEST", stock_data, [1])
+
+        # 토픽 시도 + General 폴백 = 총 2회 호출
+        self.assertEqual(self.mock_bot.send_message.call_count, 2)
+        first_call = self.mock_bot.send_message.call_args_list[0]
+        self.assertEqual(first_call.kwargs.get("message_thread_id"), 999)
+        second_call = self.mock_bot.send_message.call_args_list[1]
+        self.assertIsNone(second_call.kwargs.get("message_thread_id"))
+        # 폴백 전송이 성공했으므로 기록되어야 함
+        self.assertTrue(database.has_sent_recommendation_alert(1, "TEST", today_str, "STRONG_BUY"))
 if __name__ == "__main__":
     unittest.main()
