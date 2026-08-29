@@ -3,6 +3,7 @@ import threading
 from config import CHECK_INTERVAL
 import database
 import stock_api
+import toss_api
 import indicators
 import predictor
 import market_indices
@@ -531,6 +532,12 @@ class AlertScheduler:
             print("No subscriptions active. Skipping market scan.")
             return
 
+        # 토스증권 Open API 설정 시: 전체 종목의 현재가를 배치 요청 1회로 미리 조회 (속도 최적화)
+        price_cache = None
+        if toss_api.is_configured():
+            price_cache = stock_api.fetch_current_prices_batch(tickers)
+            print(f"⚡ Toss OpenAPI: 현재가 {len(price_cache)}/{len(tickers)} 종목 배치 조회 완료")
+
         for ticker in tickers:
             try:
                 # 휴장일 체크: 해당 종목의 시장이 휴장이면 실시간 조회를 건너뜀
@@ -538,7 +545,7 @@ class AlertScheduler:
                     print(f"📅 {ticker} 시장이 휴장일입니다. 실시간 조회를 건너뜁니다.")
                     continue
 
-                stock_data = stock_api.fetch_stock_data(ticker)
+                stock_data = stock_api.fetch_stock_data(ticker, price_cache=price_cache)
                 if not stock_data:
                     print(f"Skipping {ticker} scan - could not retrieve stock data.")
                     continue
@@ -547,8 +554,10 @@ class AlertScheduler:
                 self._check_stock_high_breakouts(ticker, stock_data)
 
                 self._process_ticker_alerts(ticker, stock_data)
-                # Small cool-off between stocks to respect API limits
-                time.sleep(1)
+                # Yahoo Finance 사용 시에만 API 요청 제한을 피하기 위한 쿨다운 유지
+                # (토스 Open API는 초당 15~20회 허용이라 종목 간 대기가 불필요함)
+                if not toss_api.is_configured():
+                    time.sleep(1)
             except Exception as e:
                 print(f"Error processing scan for {ticker}: {e}")
 

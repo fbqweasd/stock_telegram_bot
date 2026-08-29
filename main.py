@@ -4,6 +4,7 @@ import database
 from config import TELEGRAM_BOT_TOKEN, DB_PATH, CHECK_INTERVAL
 from telegram_bot import TelegramBot
 from scheduler import AlertScheduler
+import toss_api
 
 def check_environment():
     """
@@ -27,6 +28,21 @@ def main():
     # Check if necessary variables exist
     if not check_environment():
         sys.exit(1)
+
+    # 토스증권 Open API 연동 여부 확인 (실행 시 콘솔에 표시)
+    toss_status = toss_api.check_connection()
+    if toss_status["configured"]:
+        if toss_status["ok"]:
+            print("✅ Data Source: 토스증권 Open API 사용 (TOSS_CLIENT_ID / TOSS_CLIENT_SECRET 설정됨)")
+            print(f"   - {toss_status['message']}")
+            print("   - 실패 시 기존 Yahoo Finance 방식으로 자동 폴백합니다.")
+        else:
+            print("⚠️ Data Source: 토스증권 Open API 설정됨 BUT 연결 실패")
+            print(f"   - 사유: {toss_status['message']}")
+            print("   - 기존 Yahoo Finance 방식으로 동작합니다.")
+    else:
+        print("ℹ️  Data Source: Yahoo Finance 사용")
+        print("   - 더 빠른 조회를 원하면 .env에 TOSS_CLIENT_ID / TOSS_CLIENT_SECRET을 설정하세요.")
         
     # 1. Initialize SQLite Database Tables
     print(f"📂 Initializing database at '{DB_PATH}'...")
@@ -49,6 +65,10 @@ def main():
     print("🎉 STOCK ALERT BOT IS NOW RUNNING SUCCESSFULLY!")
     print(f"- SQLite DB: {DB_PATH}")
     print(f"- Scan Interval: {CHECK_INTERVAL} seconds ({CHECK_INTERVAL/60:.1f} minutes)")
+    if toss_status["configured"] and toss_status["ok"]:
+        print("- Data Source: 토스증권 Open API ⚡ (빠른 모드)")
+    else:
+        print("- Data Source: Yahoo Finance")
     print("Press CTRL+C to terminate services gracefully.")
     print("="*50 + "\n")
     

@@ -39,3 +39,7 @@ DB_PATH = os.environ.get("DB_PATH", "data/stock_bot.db")
 db_dir = os.path.dirname(DB_PATH)
 if db_dir and not os.path.exists(db_dir):
     os.makedirs(db_dir, exist_ok=True)
+
+# Toss Securities Open API (선택 사항)
+TOSS_CLIENT_ID = os.environ.get("TOSS_CLIENT_ID", "")
+TOSS_CLIENT_SECRET = os.environ.get("TOSS_CLIENT_SECRET", "")

@@ -4,6 +4,8 @@ import json
 import ssl
 import time
 
+import toss_api
+
 def _make_request(url, retries=3, delay=2):
     """
     Helper to make HTTP requests with retry logic.
@@ -28,6 +30,53 @@ def _make_request(url, retries=3, delay=2):
                 continue
             raise e
     return None
+
+
+def is_toss_enabled():
+    """토스증권 Open API(.env: TOSS_CLIENT_ID/SECRET)가 설정되어 있는지 여부."""
+    return toss_api.is_configured()
+
+
+def fetch_current_prices_batch(tickers):
+    """
+    여러 종목의 현재가를 일괄 조회합니다.
+    - 토스증권 Open API 설정 시: 배치 조회(최대 200종목/1회)로 매우 빠르게 조회
+    - 미설정/실패 시: 각 종목을 기존 방식으로 개별 조회
+    반환: { ticker: {"price": ..., "previous_close": ..., "currency": ...} } (실패 종목 제외)
+    """
+    tickers = [t.strip().upper() for t in (tickers or []) if t and t.strip()]
+    if not tickers:
+        return {}
+
+    if toss_api.is_configured():
+        toss_symbols = {ticker: toss_api.to_toss_symbol(ticker) for ticker in tickers}
+        try:
+            prices = toss_api.fetch_current_prices(list(toss_symbols.values()))
+        except Exception:
+            prices = None
+        if prices:
+            result = {}
+            for ticker, sym in toss_symbols.items():
+                info = prices.get(sym)
+                if info and info.get("price") is not None:
+                    result[ticker] = {
+                        "price": info["price"],
+                        "previous_close": None,  # 전일종가는 fetch_stock_data에서 캔들로 계산
+                        "currency": info.get("currency"),
+                    }
+            if result:
+                return result
+
+    # 폴백: 개별 조회
+    result = {}
+    for ticker in tickers:
+        try:
+            data = fetch_current_price_only(ticker)
+        except Exception:
+            data = None
+        if data:
+            result[ticker] = data
+    return result
 
 
 def _get_realtime_price(ticker):
@@ -488,11 +537,27 @@ def fetch_highs_data(ticker):
 
 def fetch_stock_name(ticker):
     """
-    Yahoo Finance에서 종목명(회사명)을 가져옵니다.
-    chart API의 meta.longName 또는 meta.shortName에서 추출합니다.
+    종목명(회사명)을 가져옵니다.
+    1순위: 토스증권 Open API (종목 마스터 조회)
+    2순위: Yahoo Finance chart API의 meta.longName / meta.shortName
     실패 시 티커를 그대로 반환합니다.
     """
     ticker = ticker.strip().upper()
+
+    # 1순위: 토스증권 Open API
+    if toss_api.is_configured():
+        try:
+            toss_symbol = toss_api.to_toss_symbol(ticker)
+            info_map = toss_api.fetch_stock_names([toss_symbol])
+            if info_map:
+                info = info_map.get(toss_symbol) or {}
+                name = info.get("name") or info.get("englishName")
+                if name:
+                    return name
+        except Exception as e:
+            print(f"Error fetching stock name via Toss for {ticker}: {e}")
+
+    # 2순위: Yahoo Finance
     encoded_ticker = urllib.parse.quote(ticker)
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=1d&interval=1d"
     
@@ -510,40 +575,91 @@ def fetch_stock_name(ticker):
     return ticker
 
 
-def fetch_stock_data(ticker):
+def _fetch_stock_data_toss(ticker, price_cache=None):
     """
-    Fetches historical daily data + realtime price from Yahoo Finance API.
-    
-    - 일봉(1d interval, 60일): 기술적 지표 계산용
-    - 5분봉(5m interval, 5일): 실시간 현재가 (프리장/애프터장 포함)
-    
+    토스증권 Open API로 일봉 + 현재가 + 종목명을 가져옵니다.
+    실패하거나 키가 없으면 None을 반환해 Yahoo Finance로 자동 폴백합니다.
+    """
+    try:
+        daily = toss_api.build_daily_data(ticker, count=260)
+        if not daily:
+            return None
+
+        toss_symbol = toss_api.to_toss_symbol(ticker)
+        price_info = None
+        if isinstance(price_cache, dict) and price_cache.get(ticker):
+            price_info = price_cache[ticker]
+        if not price_info:
+            prices = toss_api.fetch_current_prices([toss_symbol])
+            if prices and prices.get(toss_symbol):
+                p = prices[toss_symbol]
+                if p.get("price") is not None:
+                    price_info = {"price": p["price"], "currency": p.get("currency")}
+
+        current_price = price_info.get("price") if price_info else None
+        if current_price is None:
+            current_price = daily["closes"][-1]
+
+        currency = (price_info or {}).get("currency") or daily.get("currency") or "USD"
+
+        return {
+            "ticker": ticker,
+            "name": fetch_stock_name(ticker),
+            "currency": currency,
+            "current_price": current_price,
+            "previous_close": daily.get("previous_close"),
+            "market_state": daily.get("market_state") or "UNKNOWN",
+            "timestamps": daily["timestamps"],
+            "closes": daily["closes"],
+            "highs": daily["highs"],
+            "lows": daily["lows"],
+            "opens": daily["opens"],
+            "volumes": daily["volumes"]
+        }
+    except Exception as e:
+        print(f"Toss API fetch_stock_data failed for {ticker}: {e}")
+        return None
+
+
+def fetch_stock_data(ticker, price_cache=None):
+    """
+    종목의 일봉 데이터 + 실시간 현재가 + 종목명을 가져옵니다.
+    - 토스증권 Open API가 설정되어 있으면 토스 API를 우선 사용합니다 (국내 서버, 더 빠름).
+    - 토스 설정이 없거나 실패하면 Yahoo Finance API로 자동 폴백합니다.
+
     Returns a dictionary of cleaned stock data or None if failed.
     """
     ticker = ticker.strip().upper()
-    
-    # 1. 일봉 데이터 (기술적 지표 계산용 + 전일종가)
+
+    # 1순위: 토스증권 Open API
+    if toss_api.is_configured():
+        toss_data = _fetch_stock_data_toss(ticker, price_cache)
+        if toss_data:
+            return toss_data
+
+    # 2순위: Yahoo Finance - 일봉 데이터 (기술적 지표 계산용 + 전일종가)
     daily = _get_daily_data(ticker)
     if not daily:
         return None
     
-    # 2. 실시간 현재가 (1분봉 + 5분봉) - 프리장/애프터장 포함
+    # 실시간 현재가 (1분봉 + 5분봉) - 프리장/애프터장 포함
     realtime_price, realtime_prev_close, currency, market_state = _get_realtime_price(ticker)
     
     # currency가 None이면 일봉 데이터에서 가져옴
     if currency is None:
         currency = daily.get("currency", "USD")
     
-    # 3. 현재가 결정
+    # 현재가 결정
     current_price = realtime_price
     if current_price is None:
         current_price = daily["closes"][-1]
     
-    # 4. 전일 종가: _get_daily_data에서 이미 closes[-1]로 정확한 값을 제공
+    # 전일 종가: _get_daily_data에서 이미 closes[-1]로 정확한 값을 제공
     previous_close = daily.get("previous_close")
     if previous_close is None:
         previous_close = realtime_prev_close
     
-    # 5. 종목명 가져오기
+    # 종목명 가져오기
     stock_name = fetch_stock_name(ticker)
     
     return {
@@ -752,15 +868,60 @@ def fetch_weekly_change(ticker):
     }
 
 
-def fetch_current_price_only(ticker):
+def _fetch_current_price_only_toss(ticker, price_cache=None):
+    """
+    토스증권 Open API로 현재가를 조회합니다. 실패 시 None을 반환해 Yahoo로 폴백합니다.
+    """
+    try:
+        daily = toss_api.build_daily_data(ticker, count=260)
+        daily_prev_close = daily.get("previous_close") if daily else None
+
+        toss_symbol = toss_api.to_toss_symbol(ticker)
+        price_info = None
+        if isinstance(price_cache, dict) and price_cache.get(ticker):
+            price_info = price_cache[ticker]
+        if not price_info:
+            prices = toss_api.fetch_current_prices([toss_symbol])
+            if prices and prices.get(toss_symbol):
+                p = prices[toss_symbol]
+                if p.get("price") is not None:
+                    price_info = {"price": p["price"], "currency": p.get("currency")}
+
+        if price_info and price_info.get("price") is not None:
+            return {
+                "price": price_info["price"],
+                "previous_close": daily_prev_close,
+                "currency": price_info.get("currency") or (daily.get("currency") if daily else None) or "USD"
+            }
+
+        # 현재가 없으면 일봉 마지막 종가로 폴백
+        if daily and daily["closes"]:
+            return {
+                "price": daily["closes"][-1],
+                "previous_close": daily_prev_close,
+                "currency": daily.get("currency", "USD")
+            }
+    except Exception as e:
+        print(f"Toss API fetch_current_price_only failed for {ticker}: {e}")
+    return None
+
+
+def fetch_current_price_only(ticker, price_cache=None):
     """
     가벼운 현재가 조회용 함수.
-    실시간 현재가는 1분봉/5분봉 API로, 전일 종가는 일봉 API로 조회합니다.
+    - 토스증권 Open API 설정 시 토스로 우선 조회 (배치 현재가, 국내 서버, 더 빠름)
+    - 미설정/실패 시 기존 Yahoo Finance 1분봉/5분봉 API로 조회
     반환: { price, previous_close, currency }
     """
     ticker = ticker.strip().upper()
-    
-    # 1. 일봉 데이터에서 전일 종가 조회 (가장 정확한 기준)
+
+    # 1순위: 토스증권 Open API
+    if toss_api.is_configured():
+        toss_price = _fetch_current_price_only_toss(ticker, price_cache)
+        if toss_price:
+            return toss_price
+
+    # 2순위: Yahoo Finance - 일봉 데이터에서 전일 종가 조회 (가장 정확한 기준)
     daily = _get_daily_data(ticker)
     daily_prev_close = daily.get("previous_close") if daily else None
     

@@ -46,6 +46,12 @@ cp .env.example .env
 TELEGRAM_BOT_TOKEN=여기에_봇_토큰_입력
 CHECK_INTERVAL=3600
 DB_PATH=data/stock_bot.db
+
+# (선택) 토스증권 Open API - 설정 시 데이터 조회가 더 빨라집니다.
+# 미설정/실패 시 기존 Yahoo Finance로 자동 폴백합니다.
+# 발급: 토스증권 WTS > 설정 > Open API > 앱 등록 + 허용 IP 등록 필수
+TOSS_CLIENT_ID=여기에_클라이언트_ID
+TOSS_CLIENT_SECRET=여기에_클라이언트_시크릿
 ```
 
 ### 3. 실행
@@ -193,7 +199,7 @@ python -m unittest tests.test_backtest -v
 | 항목 | 내용 |
 |------|------|
 | **언어** | Python 3.11+ (표준 라이브러리만 사용) |
-| **API** | Telegram Bot API (urllib), Yahoo Finance (urllib), Alternative.me (공포탐욕지수) |
+| **API** | Telegram Bot API (urllib), Yahoo Finance (urllib), 토스증권 Open API (선택, 더 빠른 시세 조회), Alternative.me (공포탐욕지수) |
 | **데이터베이스** | SQLite3 (내장) |
 | **지표 계산** | SMA, 볼린저 밴드, RSI (Wilder Smoothing), 지지/저항 |
 | **예측 모델** | 규칙 기반 휴리스틱 (Rule-based) |
@@ -212,7 +218,8 @@ stock_bot/
 ├── market_indices.py  # 시장 인덱스 데이터 수집 (공포탐욕지수, VIX, 지수, 환율, 국채, KOSPI/KOSDAQ)
 ├── predictor.py       # 매수/매도 가격 예측
 ├── scheduler.py       # 백그라운드 알림 스케줄러
-├── stock_api.py       # Yahoo Finance API 연동
+├── stock_api.py       # Yahoo Finance API 연동 (+ 토스증권 Open API 우선 사용/폴백)
+├── toss_api.py        # 토스증권 Open API 연동 (선택, OAuth2 토큰/시세/캔들/종목정보)
 ├── telegram_bot.py    # 텔레그램 봇 (명령어 처리/메시지 전송)
 ├── backtest.py        # 백테스트 (예측 정확도 검증)
 ├── Dockerfile         # 도커 이미지 빌드
@@ -276,6 +283,8 @@ stock_bot/
 - 본 봇은 **기술적 보조지표**만을 기반으로 한 휴리스틱 예측을 제공합니다.
 - **투자 권유가 아니며**, 실제 매매 결정은 본인의 판단에 따라 신중히 하시기 바랍니다.
 - Yahoo Finance API는 요청 제한이 있을 수 있습니다.
+- 토스증권 Open API 사용 시 허용 IP 등록이 필요하며(미등록 시 403), 주봉·역대 최고가·VIX 등
+  일부 데이터는 토스에서 지원하지 않아 **기존 Yahoo Finance로 자동 폴백**합니다.
 - 봇이 정상 작동하려면 텔레그램 API 서버와의 연결이 가능해야 합니다.
 
 ---
