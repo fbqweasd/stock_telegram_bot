@@ -39,12 +39,18 @@ def fetch_current_prices_batch(tickers):
     """
     Fetch current prices for multiple tickers.
     Uses Toss API (fast, batch) if configured, otherwise falls back to individual Yahoo Finance requests.
+    토스에서 일부 종목만 반환되면 누락된 종목만 개별 조회로 보완합니다.
     Returns: { ticker: {price, previous_close, currency} }
     """
     tickers = [t.strip().upper() for t in (tickers or []) if t and t.strip()]
     if not tickers:
         return {}
 
+    result = {}
+    missing = list(tickers)
+    toss_batch_broken = False
+
+    # 1순위: 토스증권 Open API (배치 요청 1회)
     if toss_api.is_configured():
         toss_symbols = {ticker: toss_api.to_toss_symbol(ticker) for ticker in tickers}
         try:
@@ -52,7 +58,6 @@ def fetch_current_prices_batch(tickers):
         except Exception:
             prices = None
         if prices:
-            result = {}
             for ticker, sym in toss_symbols.items():
                 info = prices.get(sym)
                 if info and info.get("price") is not None:
@@ -61,14 +66,17 @@ def fetch_current_prices_batch(tickers):
                         "previous_close": None,  # Calculated from candles in fetch_stock_data
                         "currency": info.get("currency"),
                     }
-            if result:
-                return result
+            # 배치에서 누락된 종목(미지원 심볼 등)만 개별 조회 대상으로
+            missing = [t for t in tickers if t not in result]
+        else:
+            # 배치 요청 자체가 실패/빈 응답인 경우 → 심볼별 토스 재시도는 중복 실패 호출이므로 생략
+            toss_batch_broken = True
 
-    # Fallback: individual requests
-    result = {}
-    for ticker in tickers:
+    # 2순위: 누락 종목만 개별 조회 (폴백)
+    # 배치가 부분 성공한 경우 누락 종목은 토스 개별 재시도 후 Yahoo로 폴백
+    for ticker in missing:
         try:
-            data = fetch_current_price_only(ticker)
+            data = fetch_current_price_only(ticker, allow_toss=not toss_batch_broken)
         except Exception:
             data = None
         if data:
@@ -874,17 +882,18 @@ def _fetch_current_price_only_toss(ticker, price_cache=None):
     return None
 
 
-def fetch_current_price_only(ticker, price_cache=None):
+def fetch_current_price_only(ticker, price_cache=None, allow_toss=True):
     """
     가벼운 현재가 조회용 함수.
     - 토스증권 Open API 설정 시 토스로 우선 조회 (배치 현재가, 국내 서버, 더 빠름)
     - 미설정/실패 시 기존 Yahoo Finance 1분봉/5분봉 API로 조회
+    - allow_toss=False 인 경우 토스를 건너뛰고 바로 Yahoo Finance로 조회합니다.
     반환: { price, previous_close, currency }
     """
     ticker = ticker.strip().upper()
 
     # 1순위: 토스증권 Open API
-    if toss_api.is_configured():
+    if allow_toss and toss_api.is_configured():
         toss_price = _fetch_current_price_only_toss(ticker, price_cache)
         if toss_price:
             return toss_price

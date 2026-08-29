@@ -289,13 +289,17 @@ def clear_all_signals_for_ticker(chat_id, ticker):
 def set_last_price(chat_id, ticker, price):
     """
     Updates the last known price for a ticker.
+    UPSERT 사용: 기존 행의 last_alert_price / alert_threshold_pct 는 보존됩니다.
     """
     ticker = ticker.upper().strip()
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT OR REPLACE INTO last_prices (chat_id, ticker, last_price, updated_at)
+            INSERT INTO last_prices (chat_id, ticker, last_price, updated_at)
             VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(chat_id, ticker) DO UPDATE SET
+                last_price = excluded.last_price,
+                updated_at = CURRENT_TIMESTAMP
         """, (chat_id, ticker, price))
         conn.commit()
 

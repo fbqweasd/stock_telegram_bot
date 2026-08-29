@@ -460,9 +460,14 @@ class TelegramBot:
         kst_offset = 9 * 60 * 60
         now_str = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() + kst_offset))
         lines = [f"<b>📋 나의 관심 주식 리스트</b>\n⏱ 조회시간: <code>{now_str}</code>\n"]
+
+        # 토스증권 Open API 설정 시: 배치 요청 1회로 전체 현재가를 미리 조회 (속도 최적화)
+        # (부분 실패 시 누락 종목만 개별 조회로 보완됨)
+        price_cache = stock_api.fetch_current_prices_batch(subscriptions) if stock_api.is_toss_enabled() else None
+
         for idx, ticker in enumerate(subscriptions, 1):
-            # 빠른 현재가 조회 (프리장/애프터장 포함)
-            price_data = stock_api.fetch_current_price_only(ticker)
+            # 빠른 현재가 조회 (프리장/애프터장 포함, 토스 설정 시 배치 캐시 우선 사용)
+            price_data = (price_cache or {}).get(ticker) or stock_api.fetch_current_price_only(ticker)
             if price_data:
                 price = price_data['price']
                 prev_close = price_data.get('previous_close')
@@ -1035,10 +1040,10 @@ class TelegramBot:
             "<i>기술적 지표 신호를 포함한 모든 자동 알람을 받습니다.</i>\n"
         )
 
-    def _build_alarm_keyboard(self, current_level=None):
+    def _build_alarm_keyboard(self, chat_id, current_level=None):
         """알람 수신 수준 인라인 키보드를 생성합니다. 현재 설정에는 ✅를 표시합니다."""
         if current_level is None:
-            current_level = database.get_chat_alert_level(0)
+            current_level = database.get_chat_alert_level(chat_id)
         rows = []
         for level in database.ALERT_LEVELS:
             label = database.ALERT_LEVEL_LABELS.get(level, level)
@@ -1054,7 +1059,7 @@ class TelegramBot:
         """
         current_level = database.get_chat_alert_level(chat_id)
         text = self._build_alarm_settings_text()
-        keyboard = self._build_alarm_keyboard(current_level)
+        keyboard = self._build_alarm_keyboard(chat_id, current_level)
         current_label = database.ALERT_LEVEL_LABELS.get(current_level, current_level)
         text += f"━━━━━━━━━━━━━━━━━━━\n<b>현재 설정:</b> {current_label}"
         self.send_message(
@@ -1105,7 +1110,7 @@ class TelegramBot:
                     chat_id,
                     message_id,
                     new_text,
-                    reply_markup=self._build_alarm_keyboard(level)
+                    reply_markup=self._build_alarm_keyboard(chat_id, level)
                 )
         except Exception as e:
             print(f"Error handling callback query: {e}")
