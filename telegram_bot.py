@@ -11,10 +11,7 @@ import predictor
 import market_indices
 import weekly_report
 
-# Telegram BotCommand 목록
-# setMyCommands API로 등록하면 사용자가 "/" 를 입력할 때 자동완성 메뉴로 표시됩니다.
-# 채팅 하단 메뉴 버튼(≡)에서도 이 목록을 확인/선택할 수 있습니다.
-# BotCommand의 command 는 소문자 영문자로 시작해야 하므로 한국어 명령어는 여기에 포함하지 않습니다.
+# Telegram BotCommand list for auto-complete menu
 COMMANDS = [
     {"command": "start", "description": "환영 메시지 표시"},
     {"command": "help", "description": "명령어 도움말 표시"},
@@ -42,9 +39,7 @@ class TelegramBot:
         self.ssl_context.verify_mode = ssl.CERT_NONE
         
     def _api_call(self, method, data=None):
-        """
-        Helper method to make HTTP requests to the Telegram Bot API.
-        """
+        """Make HTTP request to Telegram Bot API."""
         if not self.token:
             print("Telegram Bot Token is not configured. API call skipped.")
             return None
@@ -63,10 +58,8 @@ class TelegramBot:
                 if response.status == 200:
                     return json.loads(response.read().decode("utf-8"))
                 else:
-                    # Log non-200 responses as well
                     print(f"Telegram API Error on {method}: HTTP Error {response.status}: {response.read().decode('utf-8')}")
         except urllib.error.HTTPError as e:
-            # Catch HTTPError specifically to get more details
             print(f"Telegram API Error on {method}: HTTP Error {e.code}: {e.reason} - {e.file.read().decode('utf-8')}")
         except Exception as e:
             print(f"Telegram API Error on {method}: {e}")
@@ -74,11 +67,8 @@ class TelegramBot:
 
     def send_message(self, chat_id, text, parse_mode="HTML", reply_to_message_id=None, message_thread_id=None, reply_markup=None):
         """
-        Sends a message to the specified chat_id.
-        - reply_to_message_id: 특정 메시지에 답장(Reply) 형태로 보냅니다.
-        - message_thread_id: Topics(스레드)가 활성화된 그룹에서 특정 스레드에 메시지를 보냅니다.
-        - reply_markup: 인라인 키보드 등 Telegram reply_markup JSON 딕셔너리.
-        Returns the message_id on success, None on failure.
+        Send message to chat_id.
+        Returns message_id on success, None on failure.
         """
         payload = {
             "chat_id": chat_id,

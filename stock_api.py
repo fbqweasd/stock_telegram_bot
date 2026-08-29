@@ -7,9 +7,7 @@ import time
 import toss_api
 
 def _make_request(url, retries=3, delay=2):
-    """
-    Helper to make HTTP requests with retry logic.
-    """
+    """HTTP request helper with retry logic."""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
     }
@@ -33,16 +31,15 @@ def _make_request(url, retries=3, delay=2):
 
 
 def is_toss_enabled():
-    """토스증권 Open API(.env: TOSS_CLIENT_ID/SECRET)가 설정되어 있는지 여부."""
+    """Check if Toss Open API is configured."""
     return toss_api.is_configured()
 
 
 def fetch_current_prices_batch(tickers):
     """
-    여러 종목의 현재가를 일괄 조회합니다.
-    - 토스증권 Open API 설정 시: 배치 조회(최대 200종목/1회)로 매우 빠르게 조회
-    - 미설정/실패 시: 각 종목을 기존 방식으로 개별 조회
-    반환: { ticker: {"price": ..., "previous_close": ..., "currency": ...} } (실패 종목 제외)
+    Fetch current prices for multiple tickers.
+    Uses Toss API (fast, batch) if configured, otherwise falls back to individual Yahoo Finance requests.
+    Returns: { ticker: {price, previous_close, currency} }
     """
     tickers = [t.strip().upper() for t in (tickers or []) if t and t.strip()]
     if not tickers:
@@ -61,13 +58,13 @@ def fetch_current_prices_batch(tickers):
                 if info and info.get("price") is not None:
                     result[ticker] = {
                         "price": info["price"],
-                        "previous_close": None,  # 전일종가는 fetch_stock_data에서 캔들로 계산
+                        "previous_close": None,  # Calculated from candles in fetch_stock_data
                         "currency": info.get("currency"),
                     }
             if result:
                 return result
 
-    # 폴백: 개별 조회
+    # Fallback: individual requests
     result = {}
     for ticker in tickers:
         try:
@@ -81,23 +78,9 @@ def fetch_current_prices_batch(tickers):
 
 def _get_realtime_price(ticker):
     """
-    1분봉 + 5분봉 차트에서 마지막 유효 가격을 찾습니다.
-    프리장(PRE) / 정규장(REGULAR) / 애프터장(POST) 모든 시간대 반영.
-    데이터가 없으면 전날 종가로 fallback합니다.
-
-    includePrePost=true 파라미터를 사용하여 프리마켓/애프터마켓 거래 데이터를
-    포함한 캔들을 가져옵니다. marketState에 관계없이 가장 최근 실제 거래 가격을
-    반환하는 것이 목표입니다.
-
-    1순위: 1분봉(range=2d, interval=1m, includePrePost=true)
-    2순위: 5분봉(range=5d, interval=5m, includePrePost=true) - 1분봉 실패 시 fallback
-
-    가격 선택 우선순위:
-    - 1분봉 캔들 중 마지막 유효 close (프리/본장/애프터 모두 포함)
-    - meta.regularMarketPrice (fallback)
-    - 5분봉 캔들 중 마지막 유효 close (1분봉 실패 시)
-
-    반환: (current_price, previous_close, currency, market_state)
+    Get latest valid price from 1m/5m candles (includes pre/post market).
+    Falls back to previous close if no data available.
+    Returns: (current_price, previous_close, currency, market_state)
     """
     encoded_ticker = urllib.parse.quote(ticker)
 
@@ -106,10 +89,7 @@ def _get_realtime_price(ticker):
     currency = None
     market_state = None
 
-    # ================================================================
-    # 1순위: 1분봉 (range=2d, interval=1m, includePrePost=true)
-    # includePrePost=true: 프리마켓(04:00~09:30 ET) / 애프터마켓(16:00~20:00 ET) 캔들 포함
-    # ================================================================
+    # Try 1m candles first (2d range)
     url_1m = (
         f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}"
         f"?range=2d&interval=1m&includePrePost=true"
@@ -124,30 +104,23 @@ def _get_realtime_price(ticker):
             currency = meta.get("currency", "USD")
             market_state = meta.get("marketState", "UNKNOWN")
 
-            # 전일 종가 (Yahoo chart meta)
-            # chartPreviousClose는 range 시작 이전 종가이므로 부적합할 수 있음
-            # previousClose / regularMarketPreviousClose가 실제 전일 종가
             previous_close = (meta.get("previousClose") or
                             meta.get("regularMarketPreviousClose") or
                             meta.get("chartPreviousClose"))
 
-            # 핵심 수정: 1분봉 캔들 중 마지막 유효 close를 우선 사용
-            # includePrePost=true 덕분에 PRE/POST 시간대의 실제 거래가도 포함됨
+            # Use last valid close from 1m candles
             closes_1m = result.get("indicators", {}).get("quote", [{}])[0].get("close", [])
             for i in range(len(closes_1m) - 1, -1, -1):
                 if closes_1m[i] is not None:
                     current_price = closes_1m[i]
                     break
 
-            # 캔들 데이터가 없는 경우에만 meta.regularMarketPrice로 fallback
             if current_price is None:
                 current_price = meta.get("regularMarketPrice")
         except (IndexError, AttributeError, TypeError):
             pass
 
-    # ================================================================
-    # 2순위: 5분봉 (range=5d, interval=5m, includePrePost=true) - 1분봉 실패 시 fallback
-    # ================================================================
+    # Fallback to 5m candles if 1m failed
     if current_price is None:
         url_5m = (
             f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}"
@@ -169,14 +142,12 @@ def _get_realtime_price(ticker):
                                     meta.get("regularMarketPreviousClose") or
                                     meta.get("chartPreviousClose"))
 
-                # 5분봉 캔들 중 마지막 유효 close 우선 사용
                 closes_5m = result.get("indicators", {}).get("quote", [{}])[0].get("close", [])
                 for i in range(len(closes_5m) - 1, -1, -1):
                     if closes_5m[i] is not None:
                         current_price = closes_5m[i]
                         break
 
-                # 캔들 데이터가 없는 경우에만 regularMarketPrice로 fallback
                 if current_price is None:
                     current_price = meta.get("regularMarketPrice")
             except (IndexError, AttributeError, TypeError):
@@ -187,11 +158,8 @@ def _get_realtime_price(ticker):
 
 def _get_daily_data(ticker):
     """
-    일봉 데이터를 가져옵니다 (기술적 지표 계산용 + 전일종가).
-    includePrePost=false로 요청하여 정확한 일봉 데이터를 얻습니다.
-    (includePrePost=true는 하루에 여러 캔들(프리/정규/애프터)이 생겨 전일 종가 계산이 왜곡될 수 있음)
-    range=1y (약 250 캔들)로 요청하여 20/60/120일 이동평균선 계산에 충분한 데이터를 확보합니다.
-    반환: { closes, highs, lows, opens, volumes, timestamps, currency, previous_close }
+    Fetch daily OHLCV data (1y range) for technical indicators.
+    Returns: { closes, highs, lows, opens, volumes, timestamps, currency, previous_close }
     """
     encoded_ticker = urllib.parse.quote(ticker)
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=1y&interval=1d&includePrePost=false"

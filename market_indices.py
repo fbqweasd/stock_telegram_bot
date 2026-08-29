@@ -1,11 +1,10 @@
 """
-시장 인덱스 데이터 수집 모듈
-- CNN Fear & Greed Index (공포탐욕지수) - CNN Money 공식 API
-- VIX (변동성 지수)
-- S&P 500, NASDAQ, DOW 지수
-- USD/KRW 환율
-- 미국 10년물 국채 수익률
-- US Dollar Index (달러 인덱스, DXY)
+Market indices data collection module.
+- CNN Fear & Greed Index
+- VIX, S&P 500, NASDAQ, DOW
+- USD/KRW exchange rate
+- US 10Y Treasury yield
+- US Dollar Index (DXY)
 """
 
 import urllib.request
@@ -15,9 +14,7 @@ import ssl
 import time
 
 def _make_request(url, headers=None, retries=3, delay=2):
-    """
-    HTTP 요청을 보내는 헬퍼 함수 (재시도 로직 포함)
-    """
+    """HTTP request helper with retry logic."""
     if headers is None:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
@@ -43,17 +40,9 @@ def _make_request(url, headers=None, retries=3, delay=2):
 
 def fetch_fear_greed_index():
     """
-    Fear & Greed Index (공포탐욕지수)를 가져옵니다.
-    CNN Money 공식 API 사용
-    반환: { value, classification, previous_close, week_ago, month_ago }
-    
-    classification:
-    - 0-24: Extreme Fear (극도 공포)
-    - 25-49: Fear (공포)
-    - 50-74: Greed (탐욕)
-    - 75-100: Extreme Greed (극도 탐욕)
+    Fetch Fear & Greed Index from CNN Money API.
+    Returns: { value, classification, previous_close, week_ago, month_ago }
     """
-    # CNN Money Fear & Greed Index 공식 API
     url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",

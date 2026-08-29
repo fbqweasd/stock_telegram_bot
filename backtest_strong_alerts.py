@@ -1,15 +1,12 @@
 """
-강한 매수(STRONG BUY) / 강한 매도(STRONG SELL) 알림 전략 백테스트
+Backtest for STRONG BUY/STRONG SELL "always act" strategy.
 
-전략 규칙:
-- STRONG BUY 신호 발생 시: 무조건 매수 (현금 보유 시)
-- STRONG SELL 신호 발생 시: 무조건 매도 (주식 보유 시)
-- BUY / SELL / HOLD 신호는 무시 (액션 취하지 않음)
+Strategy rules:
+- STRONG BUY signal: Buy (if holding cash)
+- STRONG SELL signal: Sell (if holding stock)
+- BUY/SELL/HOLD signals: Ignore
 
-기존 backtest.py의 run_backtest와 달리 STRONG 신호에만 반응하는
-"무조건 액션" 전략의 성과를 검증합니다.
-
-사용법:
+Usage:
     python backtest_strong_alerts.py
 """
 

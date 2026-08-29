@@ -1,8 +1,8 @@
 """
-주간 시장 요약 리포트 모듈
-- 주요 지수 (미국: S&P 500, NASDAQ, DOW / 한국: KOSPI, KOSDAQ) 주간 변동
-- 관심 종목 주간 변동
-- 공포탐욕지수, VIX 참고 정보
+Weekly market summary report module.
+- Major indices (US: S&P 500, NASDAQ, DOW / Korea: KOSPI, KOSDAQ) weekly changes
+- Subscribed stocks weekly changes
+- Fear & Greed Index, VIX reference info
 """
 
 import time

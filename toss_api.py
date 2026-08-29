@@ -1,20 +1,7 @@
 """
-토스증권 Open API 연동 모듈
-============================
-
-- .env 에 TOSS_CLIENT_ID / TOSS_CLIENT_SECRET 이 설정되어 있으면 토스증권 Open API를
-  사용해 국내(KRX)/미국(US) 주식의 시세·캔들·종목정보를 조회합니다.
-- 설정이 없거나 API 호출이 실패하면 대부분의 함수가 None 을 반환하며,
-  stock_api.py 가 기존 Yahoo Finance 방식으로 자동 폴백(fallback)합니다.
-
-주요 엔드포인트 (REST, base: https://openapi.tossinvest.com)
-- POST /oauth2/token        : OAuth2 Client Credentials 액세스 토큰 발급
-- GET  /api/v1/prices       : 현재가 조회 (최대 200종목 배치)
-- GET  /api/v1/candles      : 캔들 OHLCV 조회 (1분봉/일봉, 1회 최대 200개, before 페이지네이션)
-- GET  /api/v1/stocks       : 종목 기본 정보 조회 (최대 200종목 배치)
-
-한국 종목 심볼은 6자리 숫자(예: 005930), 미국 종목은 영문 티커(예: AAPL)를 사용합니다.
-표준 라이브러리(urllib)만 사용합니다.
+Toss Securities Open API integration.
+Uses TOSS_CLIENT_ID/TOSS_CLIENT_SECRET from .env for domestic/US stock data.
+Falls back to Yahoo Finance if not configured or on failure.
 """
 
 import os
@@ -26,24 +13,14 @@ import urllib.parse
 import urllib.error
 from datetime import datetime, timezone, timedelta
 
-# config 를 import 하면 .env 파일이 로드되어 os.environ 에 반영됩니다.
-# (config.py 는 toss_api 를 import 하지 않으므로 순환 import 없음)
 import config  # noqa: F401
 
 API_BASE = "https://openapi.tossinvest.com"
 
-# 모듈 레벨 액세스 토큰 캐시
-# - access_token: 발급받은 토큰 / expires_at: 만료 시각
-# - fail_until: 토큰 발급 실패 시 재시도를 막기 위한 쿨다운 (60초 후 재시도)
 _token = {"access_token": None, "expires_at": 0, "fail_until": 0}
 
 _HTTP_TIMEOUT = 10
 _MAX_RETRIES = 3
-
-# 토스 API Rate Limits 그룹:
-#   MARKET_DATA       초당 15회   (현재가/호가/체결 등)
-#   MARKET_DATA_CHART 초당 20회   (캔들)
-# - 429 응답 시에는 Retry-After 헤더 또는 지수 백오프로 재시도합니다.
 
 
 def is_configured():

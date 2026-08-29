@@ -1,20 +1,16 @@
 import os
 
 def load_dotenv(filepath=".env"):
-    """
-    Custom .env file parser to load environment variables without external packages.
-    """
+    """Custom .env file parser to load environment variables without external packages."""
     if not os.path.exists(filepath):
         return
     
     with open(filepath, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            # Skip empty lines and comments
             if not line or line.startswith("#"):
                 continue
             
-            # Split by first '=' only
             if "=" in line:
                 key, val = line.split("=", 1)
                 key = key.strip()
@@ -26,20 +22,18 @@ def load_dotenv(filepath=".env"):
                 
                 os.environ[key] = val
 
-# Load variables from .env if present
 load_dotenv()
 
 # System Configs
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-# Check interval in seconds (default: 3600 seconds = 1 hour)
-CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL", 3600))
-# DB path inside data directory
+CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL", 3600))  # Default: 1 hour
 DB_PATH = os.environ.get("DB_PATH", "data/stock_bot.db")
-# Ensure the data directory exists
+
+# Ensure data directory exists
 db_dir = os.path.dirname(DB_PATH)
 if db_dir and not os.path.exists(db_dir):
     os.makedirs(db_dir, exist_ok=True)
 
-# Toss Securities Open API (선택 사항)
+# Toss Securities Open API (optional)
 TOSS_CLIENT_ID = os.environ.get("TOSS_CLIENT_ID", "")
 TOSS_CLIENT_SECRET = os.environ.get("TOSS_CLIENT_SECRET", "")

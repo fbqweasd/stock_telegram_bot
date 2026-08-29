@@ -7,9 +7,7 @@ from scheduler import AlertScheduler
 import toss_api
 
 def check_environment():
-    """
-    Validates essential configuration parameters before launching.
-    """
+    """Validates essential configuration before launching."""
     if not TELEGRAM_BOT_TOKEN:
         print("\n" + "="*60)
         print("❌ ERROR: TELEGRAM_BOT_TOKEN IS NOT CONFIGURED!")
@@ -25,11 +23,10 @@ def check_environment():
 def main():
     print("🚀 Initializing Telegram Stock Alert Bot...")
     
-    # Check if necessary variables exist
     if not check_environment():
         sys.exit(1)
 
-    # 토스증권 Open API 연동 여부 확인 (실행 시 콘솔에 표시)
+    # Display data source status
     toss_status = toss_api.check_connection()
     if toss_status["configured"]:
         if toss_status["ok"]:
@@ -44,19 +41,16 @@ def main():
         print("ℹ️  Data Source: Yahoo Finance 사용")
         print("   - 더 빠른 조회를 원하면 .env에 TOSS_CLIENT_ID / TOSS_CLIENT_SECRET을 설정하세요.")
         
-    # 1. Initialize SQLite Database Tables
+    # Initialize components
     print(f"📂 Initializing database at '{DB_PATH}'...")
     database.init_db()
     print("✅ Database initialized successfully.")
     
-    # 2. Instantiate and start Telegram Bot polling
     print("🤖 Starting Telegram Polling Service...")
     bot = TelegramBot()
-    # 봇 명령어를 등록해 사용자가 "/" 입력 시 자동완성 메뉴로 확인할 수 있게 합니다.
     bot.set_my_commands()
     bot.start_polling()
     
-    # 3. Instantiate and start Background Indicator Alert Scheduler
     print("⏰ Starting Technical Indicator Background Scan Service...")
     scheduler = AlertScheduler(bot)
     scheduler.start()
@@ -72,18 +66,14 @@ def main():
     print("Press CTRL+C to terminate services gracefully.")
     print("="*50 + "\n")
     
-    # 4. Graceful Shutdown & Keep Main Thread Alive
+    # Main loop with graceful shutdown
     try:
         while True:
             time.sleep(1)
     except (KeyboardInterrupt, SystemExit):
         print("\n⚠️ Termination signal received. Shutting down gracefully...")
-        
-        # Stop background threads
         scheduler.stop()
         bot.stop_polling()
-        
-        # Short wait to let threads wrap up
         time.sleep(1.5)
         print("👋 Services successfully terminated. Goodbye!")
         sys.exit(0)

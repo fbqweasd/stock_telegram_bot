@@ -1,15 +1,8 @@
 """
-백테스트 모듈: 실제 predict_buy_sell_prices 로직을 그대로 사용하여
-과거 데이터 기반 예측 정확도를 검증합니다.
+Backtesting module for predict_buy_sell_prices logic.
+Uses historical data to verify prediction accuracy.
 
-핵심 설계:
-1. Yahoo Finance에서 장기 일봉 데이터(기본 5년)를 가져옵니다.
-2. 각 시점에서 그 시점까지의 과거 데이터만 사용하여 predict_buy_sell_prices를 호출합니다.
-   (Look-ahead bias 방지: 미래 데이터를 사용하지 않음)
-3. 예측 결과(STRONG BUY/BUY/HOLD/SELL/STRONG SELL)와 이후 실제 가격 변동을 비교합니다.
-4. 정확도, 승률, 수익률 등 다양한 성능 지표를 계산합니다.
-
-사용법:
+Usage:
     python backtest.py --ticker AAPL --years 5 --horizon 5
     python backtest.py --ticker 005930.KS --years 3 --horizon 10 --step 2
 """

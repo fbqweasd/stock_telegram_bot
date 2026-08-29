@@ -2,20 +2,14 @@ import sqlite3
 from config import DB_PATH
 
 def get_connection():
-    """
-    Creates and returns a connection to the SQLite database.
-    Since sqlite connections are not thread-safe, we open and close a connection per request/operation.
-    """
+    """Returns a new SQLite connection (not thread-safe, open/close per operation)."""
     return sqlite3.connect(DB_PATH)
 
 def init_db():
-    """
-    Initializes the database tables if they do not exist.
-    """
+    """Initialize database tables if they don't exist."""
     with get_connection() as conn:
         cursor = conn.cursor()
         
-        # Table to store user subscriptions for stock tickers
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS subscriptions (
                 chat_id INTEGER,
@@ -25,7 +19,6 @@ def init_db():
             )
         """)
         
-        # Table to track the last sent signals to avoid spamming user
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS last_signals (
                 chat_id INTEGER,
@@ -37,7 +30,6 @@ def init_db():
             )
         """)
         
-        # Table to track last known price per ticker (for price change alerts)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS last_prices (
                 chat_id INTEGER,
@@ -50,8 +42,7 @@ def init_db():
             )
         """)
         
-        # Table to track daily price alerts (전일 종가 기준 5%/10%/20% 변동 알림)
-        # 동일한 (임계값, 방향) 조합은 하루에 1번만 알림을 보내기 위해 사용
+        # Daily price alerts: one notification per (threshold, direction) per day
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS daily_price_alerts (
                 chat_id INTEGER,
@@ -64,13 +55,11 @@ def init_db():
             )
         """)
         
-        # 기존 스키마 마이그레이션: (chat_id, ticker, alert_date) PK를 가진 구버전 테이블이 있으면
-        # 새 PK 구조로 재생성합니다.
+        # Migrate old schema if needed
         cursor.execute("PRAGMA table_info(daily_price_alerts)")
         columns = cursor.fetchall()
         pk_columns = [col[1] for col in columns if col[5] > 0]
         if pk_columns and pk_columns != ["chat_id", "ticker", "alert_date", "threshold_pct", "direction"]:
-            # 구버전 테이블 백업 후 재생성
             cursor.execute("ALTER TABLE daily_price_alerts RENAME TO daily_price_alerts_old")
             cursor.execute("""
                 CREATE TABLE daily_price_alerts (
@@ -89,7 +78,7 @@ def init_db():
             """)
             cursor.execute("DROP TABLE daily_price_alerts_old")
         
-        # Table to store chat notification topic settings (단체방 알림 토픽 설정)
+        # Chat notification topic settings
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS chat_topics (
                 chat_id INTEGER PRIMARY KEY,
@@ -98,8 +87,7 @@ def init_db():
             )
         """)
 
-        # Table to store whether automatic alerts are enabled for a chat
-        # alert_level: 알람 수신 수준 ('OFF' / 'MARKET' / 'IMPORTANT' / 'ALL')
+        # Alert settings: alert_level ('OFF' / 'MARKET' / 'IMPORTANT' / 'ALL')
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS chat_alert_settings (
                 chat_id INTEGER PRIMARY KEY,
@@ -109,8 +97,7 @@ def init_db():
             )
         """)
 
-        # 기존 스키마 마이그레이션: alert_level 컬럼이 없으면 추가하고
-        # 기존 alerts_enabled 값을 기반으로 레벨을 채워준다.
+        # Migrate: add alert_level column if missing
         cursor.execute("PRAGMA table_info(chat_alert_settings)")
         alert_setting_columns = [col[1] for col in cursor.fetchall()]
         if "alert_level" not in alert_setting_columns:
@@ -121,9 +108,7 @@ def init_db():
                 WHERE alert_level IS NULL
             """)
 
-        # Table to track daily technical signal alerts (기술적 신호 하루 1회 제한)
-        # 동일한 (티커, 신호 유형) 조합은 같은 날짜에 1번만 알림을 보내기 위해 사용
-        # (20일선 돌파 등 상태가 반복적으로 바뀌어도 하루 1번만 알림)
+        # Daily technical signal alerts: one per (ticker, signal_type) per day
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS daily_signal_alerts (
                 chat_id INTEGER,
@@ -136,9 +121,7 @@ def init_db():
             )
         """)
 
-
-        # Table to track high breakout alerts (역대/52주 최고가 돌파 알림)
-        # 동일한 (티커, 유형) 조합은 하루에 1번만 알림을 보내기 위해 사용
+        # High breakout alerts: one per (ticker, alert_type) per day
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS high_breakout_alerts (
                 chat_id INTEGER,
@@ -151,8 +134,7 @@ def init_db():
             )
         """)
 
-        # Table to track weekly report sends (주간 리포트 전송 기록)
-        # 동일한 주(week_start)에는 1번만 전송하도록 관리
+        # Weekly report sends: one per week
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS weekly_report_sends (
                 chat_id INTEGER,
@@ -162,8 +144,7 @@ def init_db():
             )
         """)
 
-        # Table to track 매수/매도 권장 알림 (STRONG BUY/STRONG SELL)
-        # 한 종목당 하루 최대 알림 횟수를 제한하기 위해 사용
+        # Recommendation alerts: STRONG BUY/STRONG SELL tracking
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS recommendation_alerts (
                 chat_id INTEGER,
@@ -178,11 +159,7 @@ def init_db():
         conn.commit()
 
 def add_subscription(chat_id, ticker):
-    """
-    Subscribes a user to a specific ticker.
-    Ticker is always saved in UPPERCASE.
-    Returns True if successfully added, False if already subscribed.
-    """
+    """Subscribe user to ticker. Returns True if added, False if already exists."""
     ticker = ticker.upper().strip()
     try:
         with get_connection() as conn:
@@ -191,7 +168,6 @@ def add_subscription(chat_id, ticker):
                 "INSERT INTO subscriptions (chat_id, ticker) VALUES (?, ?)",
                 (chat_id, ticker)
             )
-            # Initialize last_price row for price tracking
             cursor.execute("""
                 INSERT OR IGNORE INTO last_prices (chat_id, ticker, last_price, last_alert_price, alert_threshold_pct)
                 VALUES (?, ?, NULL, NULL, 5.0)
@@ -199,14 +175,10 @@ def add_subscription(chat_id, ticker):
             conn.commit()
             return True
     except sqlite3.IntegrityError:
-        # User is already subscribed to this ticker
         return False
 
 def remove_subscription(chat_id, ticker):
-    """
-    Unsubscribes a user from a specific ticker.
-    Returns True if deleted, False if subscription didn't exist.
-    """
+    """Unsubscribe user from ticker. Returns True if deleted."""
     ticker = ticker.upper().strip()
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -214,7 +186,6 @@ def remove_subscription(chat_id, ticker):
             "DELETE FROM subscriptions WHERE chat_id = ? AND ticker = ?",
             (chat_id, ticker)
         )
-        # Clean up related price tracking
         cursor.execute(
             "DELETE FROM last_prices WHERE chat_id = ? AND ticker = ?",
             (chat_id, ticker)
@@ -223,9 +194,7 @@ def remove_subscription(chat_id, ticker):
         return cursor.rowcount > 0
 
 def get_user_subscriptions(chat_id):
-    """
-    Retrieves all tickers a specific user is subscribed to.
-    """
+    """Get all tickers a user is subscribed to."""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -236,18 +205,14 @@ def get_user_subscriptions(chat_id):
         return [row[0] for row in rows]
 
 def get_all_subscriptions():
-    """
-    Retrieves all subscription mappings: [(chat_id, ticker), ...]
-    """
+    """Get all subscription mappings: [(chat_id, ticker), ...]"""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT chat_id, ticker FROM subscriptions")
         return cursor.fetchall()
 
 def get_unique_tickers():
-    """
-    Retrieves a list of all unique tickers subscribed by at least one user.
-    """
+    """Get all unique tickers with at least one subscriber."""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT DISTINCT ticker FROM subscriptions")
@@ -255,9 +220,7 @@ def get_unique_tickers():
         return [row[0] for row in rows]
 
 def get_subscribers_for_ticker(ticker):
-    """
-    Retrieves all chat IDs subscribed to a specific ticker.
-    """
+    """Get all chat IDs subscribed to a ticker."""
     ticker = ticker.upper().strip()
     with get_connection() as conn:
         cursor = conn.cursor()

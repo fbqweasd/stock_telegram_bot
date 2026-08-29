@@ -6,23 +6,12 @@ from indicators import (
 
 def predict_buy_sell_prices(stock_data):
     """
-    Analyzes historical stock data with multiple technical indicators
-    and uses rule-based scoring to estimate the best recommendation.
+    Analyze stock data with technical indicators and return buy/sell recommendation.
     
-    Indicators used (6 core types, no redundant overlap):
-    - RSI (14)          : 과매수/과매도
-    - MACD (12,26,9)    : 추세 전환 (EMA 12/26은 MACD의 구성요소이므로 별도 제외)
-    - Bollinger Bands(20): 밴드 위치 + 변동성
-    - SMA 20 vs 50     : 단기 골든크로스/데드크로스 (이전 값 비교로 정확한 크로스 감지)
-    - Volume Trend      : 거래량 동향 (독립적 확인)
-    - Support/Resistance: 피봇 기반 지지/저항
-    - ATR (14)          : 변동성 기반 목표가/손절가 산출
-    - Market Regime     : 추세장/횡보장 구분하여 가중치 조정
+    Uses 8 indicators: RSI, MACD, Bollinger Bands, SMA 20/50, Volume, S/R, ATR, Market Regime.
+    Market regime adjusts weights: trend indicators in trends, mean-reversion in ranges.
     
-    Returns a dictionary containing:
-    - recommendation: 'STRONG BUY', 'BUY', 'HOLD', 'SELL', 'STRONG SELL'
-    - confidence: Score out of 100
-    - indicators: All latest technical values
+    Returns: { recommendation, confidence, indicators, score, signals, ... }
     """
     closes = stock_data["closes"]
     highs = stock_data["highs"]
@@ -30,9 +19,7 @@ def predict_buy_sell_prices(stock_data):
     volumes = stock_data.get("volumes", [0] * len(closes))
     current_price = stock_data["current_price"]
     
-    # ============================================================
-    # Calculate ALL indicators
-    # ============================================================
+    # Calculate all indicators
     upper_bands, middle_bands, lower_bands = calculate_bollinger_bands(closes, period=20)
     rsi_list = calculate_rsi(closes, period=14)
     macd_line, signal_line, histogram = calculate_macd(closes, fast=12, slow=26, signal=9)
@@ -43,7 +30,7 @@ def predict_buy_sell_prices(stock_data):
     volume_ratio = calculate_volume_trend(volumes, period=20)
     market_regime = detect_market_regime(closes, sma_20, sma_50, period=20)
     
-    # Extract latest values (마지막 유효 None이 아닌 값 찾기)
+    # Extract latest valid values
     def _last_valid(lst, default=None):
         for i in range(len(lst) - 1, -1, -1):
             if lst[i] is not None:
@@ -72,27 +59,17 @@ def predict_buy_sell_prices(stock_data):
     bandwidth = (bb_upper - bb_lower) / bb_middle if bb_middle != 0 else 0
     bb_position = (current_price - bb_lower) / (bb_upper - bb_lower) if (bb_upper != bb_lower) else 0.5
     
-    # ============================================================
-    # MARKET REGIME ADAPTIVE WEIGHTS
-    # 추세장에서는 추세 지표(MACD, SMA) 가중치 증가
-    # 횡보장에서는 평균회귀 지표(RSI, 볼린저) 가중치 증가
-    # ============================================================
+    # Market regime adaptive weights
     if market_regime == "TRENDING_UP" or market_regime == "TRENDING_DOWN":
-        trend_weight = 1.3   # 추세 지표 가중치 증가
-        meanrev_weight = 0.8 # 평균회귀 지표 가중치 감소
+        trend_weight = 1.3
+        meanrev_weight = 0.8
     else:
-        trend_weight = 0.8   # 횡보장에서는 추세 지표 가중치 감소
-        meanrev_weight = 1.3 # 평균회귀 지표 가중치 증가
+        trend_weight = 0.8
+        meanrev_weight = 1.3
     
-    # 볼린저 밴드 스퀴즈 감지 (수정 5)
-    # bandwidth < 0.05 이면 스퀴즈 상태 (변동성 압축)
+    # Bollinger Band squeeze detection
     is_squeeze = bandwidth < 0.05
-    squeeze_weight = 0.5  # 스퀴즈 시 추가 가중치
-    
-    # ============================================================
-    # SCORING SYSTEM: 각 지표별 점수 (-2 ~ +2)
-    # 양수 = 매수 신호, 음수 = 매도 신호
-    # ============================================================
+    squeeze_weight = 0.5
     score = 0.0
     signals = []
     

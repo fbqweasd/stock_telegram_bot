@@ -15,49 +15,33 @@ class AlertScheduler:
         self.bot = bot_instance
         self.is_running = False
         self.scheduler_thread = None
-        self.last_extreme_check_date = None  # 극단 조건 체크 날짜 추적
-        self.last_us_market_close_alert_date = None  # 미국장 마감 요약 알림 날짜 추적
-        self.last_korea_market_close_alert_date = None  # 한국장 마감 요약 알림 날짜 추적
-        self.last_weekly_report_date = None  # 주간 리포트 전송 주(week_start) 추적
+        self.last_extreme_check_date = None
+        self.last_us_market_close_alert_date = None
+        self.last_korea_market_close_alert_date = None
+        self.last_weekly_report_date = None
 
     def start(self):
-        """
-        Starts the background alert scheduler thread.
-        """
+        """Start the background alert scheduler thread."""
         self.is_running = True
         self.scheduler_thread = threading.Thread(target=self._run_loop, daemon=True)
         self.scheduler_thread.start()
         print("Alert Scheduler Thread Started.")
 
     def stop(self):
-        """
-        Stops the background alert scheduler.
-        """
+        """Stop the background alert scheduler."""
         self.is_running = False
         print("Stopping Alert Scheduler...")
 
     def _run_loop(self):
-        """
-        Main loop for checking stock indicators periodically.
-        """
-        # Give the bot some time to start up before checking
-        time.sleep(10)
+        """Main loop for periodic stock indicator checks."""
+        time.sleep(10)  # Initial delay
         
         while self.is_running:
             try:
-                # 주간 리포트 체크 (매주 월요일 아침)
                 self._check_weekly_report()
-                
-                # 한국장 마감 요약 알림 체크 (한국 시간 15:30~16:59)
                 self._check_korea_market_close_alert()
-                
-                # 미국장 마감 요약 알림 체크 (미국 동부 기준 16:00~17:59)
                 self._check_us_market_close_alert()
-                
-                # 극단적 시장 조건 체크 (하루 2~3번)
                 self._check_extreme_market_conditions()
-                
-                # 지수 최고치 돌파 체크
                 self._check_index_high_breakouts()
                 
                 print("⏳ Periodic stock check sequence initiated...")
@@ -66,7 +50,7 @@ class AlertScheduler:
             except Exception as e:
                 print(f"Error in Alert Scheduler Loop: {e}")
                 
-            # Sleep in smaller increments to allow rapid, graceful shutdown
+            # Sleep in increments for graceful shutdown
             for _ in range(CHECK_INTERVAL):
                 if not self.is_running:
                     break
@@ -74,30 +58,24 @@ class AlertScheduler:
 
     def _send_alert_with_topic(self, chat_id, text):
         """
-        저장된 알림 토픽(message_thread_id)으로 메시지를 보내고,
-        해당 토픽(삭제/닫힘/권한 문제 등)으로 전송이 실패하면 유실 방지를 위해
-        토픽 없이(General) 재전송을 시도합니다.
-        성공 시 Telegram message_id를, 최종 실패 시 None을 반환합니다.
+        Send message to saved topic, fallback to General if topic fails.
+        Returns message_id on success, None on failure.
         """
         topic_id = database.get_chat_topic(chat_id)
         sent = self.bot.send_message(chat_id, text, message_thread_id=topic_id)
         if sent is None:
             if topic_id is not None:
-                # 설정된 토픽이 더 이상 유효하지 않은 경우 -> General(기본)로 폴백
                 print(f"⚠️ 토픽({topic_id})으로 전송 실패 → 토픽 없이 재시도 (chat: {chat_id})")
                 sent = self.bot.send_message(chat_id, text)
             else:
                 print(f"⚠️ 알림 전송 실패 (chat: {chat_id})")
         return sent
+
     def _check_weekly_report(self):
-        """
-        매주 월요일 아침(한국 시간 08:00~09:59)에 지난주 주간 시장 요약 리포트를 전송합니다.
-        동일한 주(week_start)에는 1번만 전송됩니다.
-        """
-        # 한국 표준시(KST) 기준
+        """Send weekly market summary on Monday mornings (KST 08:00-09:59)."""
         now_kst = market_calendar.get_korea_now()
         today_str = now_kst.strftime("%Y-%m-%d")
-        weekday = now_kst.weekday()  # 0=월요일
+        weekday = now_kst.weekday()  # 0=Monday
         hour = now_kst.hour
 
         # 매주 월요일 아침 08:00~09:59에만 전송
