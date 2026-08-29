@@ -12,8 +12,24 @@ import urllib.parse
 import json
 import ssl
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-def _make_request(url, headers=None, retries=3, delay=2):
+# 요청 기본값 (실패 시에도 빠르게 포기하도록 타임아웃/재시도를 짧게 유지)
+_REQUEST_TIMEOUT = 10   # seconds
+_REQUEST_RETRIES = 2
+_REQUEST_DELAY = 1      # seconds
+
+# 동시 요청 상한 (Yahoo Finance rate limit 보호)
+_MAX_CONCURRENT_REQUESTS = 8
+
+# 집계 함수(fetch_all_indices 등) 결과의 짧은 TTL 캐시 (연속 조회 시 중복 요청 방지)
+_CACHE_TTL = 60  # seconds
+_result_cache = {}
+_result_cache_lock = threading.Lock()
+
+
+def _make_request(url, headers=None, retries=_REQUEST_RETRIES, delay=_REQUEST_DELAY, timeout=_REQUEST_TIMEOUT):
     """HTTP request helper with retry logic."""
     if headers is None:
         headers = {
@@ -27,7 +43,7 @@ def _make_request(url, headers=None, retries=3, delay=2):
     for attempt in range(retries):
         try:
             req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, context=ctx, timeout=15) as response:
+            with urllib.request.urlopen(req, context=ctx, timeout=timeout) as response:
                 if response.status == 200:
                     return response.read().decode("utf-8")
         except Exception as e:
@@ -35,6 +51,97 @@ def _make_request(url, headers=None, retries=3, delay=2):
                 time.sleep(delay)
                 continue
             print(f"Request failed for {url}: {e}")
+    return None
+
+
+def _run_concurrently(tasks, max_workers=_MAX_CONCURRENT_REQUESTS):
+    """
+    여러 네트워크 조회 함수를 스레드 풀로 동시에 실행합니다.
+
+    tasks: { key: callable } — 각 callable은 인자 없이 호출됩니다.
+    반환: { key: 결과 } — 작업이 예외를 던지면 해당 key의 값은 None.
+    (개별 fetch 함수들이 내부에서 예외를 처리하므로 None은 대체로 조회 실패를 의미)
+    """
+    results = {}
+    if not tasks:
+        return results
+
+    workers = max(1, min(len(tasks), max_workers or len(tasks)))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_key = {executor.submit(fn): key for key, fn in tasks.items()}
+        for future in as_completed(future_to_key):
+            key = future_to_key[future]
+            try:
+                results[key] = future.result()
+            except Exception as e:
+                print(f"Error in concurrent fetch '{key}': {e}")
+                results[key] = None
+
+    return results
+
+
+def _cached(key, fetch_fn):
+    """
+    간단한 TTL 캐시 (_CACHE_TTL 초 이내의 반복 조회는 즉시 반환).
+    조회 실패(None)는 캐시하지 않으므로 다음 호출에서 재시도됩니다.
+    """
+    now = time.time()
+    with _result_cache_lock:
+        hit = _result_cache.get(key)
+        if hit is not None and now - hit[0] < _CACHE_TTL:
+            return hit[1]
+
+    value = fetch_fn()
+    if value is not None:
+        with _result_cache_lock:
+            _result_cache[key] = (now, value)
+
+    return value
+
+
+def _fetch_yahoo_quote(symbol, label, digits=2, change_digits=2):
+    """
+    Yahoo Finance chart API에서 단일 시세(지수/환율 등)를 조회합니다.
+    range=10d&interval=1d 데이터에서 현재가(regularMarketPrice)와 전일 종가를 추출해
+    등락을 계산합니다. fetch_vix/fetch_usd_krw 등 동일 패턴 함수들의 공통 구현입니다.
+
+    digits: value/previous_close 반올림 자릿수 (예: 국채 수익률 3)
+    change_digits: change 반올림 자릿수 (예: 환율 4)
+    반환: { value, change, change_pct, previous_close } 또는 None
+    """
+    encoded_symbol = urllib.parse.quote(symbol)
+    url = (
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_symbol}"
+        f"?range=10d&interval=1d&includePrePost=true"
+    )
+
+    try:
+        response = _make_request(url)
+        if response:
+            data = json.loads(response)
+            chart_result = data.get("chart", {}).get("result", [{}])[0]
+            meta = chart_result.get("meta", {})
+
+            current_price = meta.get("regularMarketPrice")
+
+            # 전일 종가: daily OHLC 데이터에서 직접 추출 (meta.chartPreviousClose는 range=10d일 때 부정확)
+            previous_close = _extract_previous_close_from_daily(chart_result)
+            if previous_close is None:
+                previous_close = meta.get("chartPreviousClose") or meta.get("previousClose")
+
+            if current_price and previous_close:
+                change = current_price - previous_close
+                change_pct = (change / previous_close) * 100 if previous_close != 0 else 0
+
+                return {
+                    "value": round(current_price, digits),
+                    "change": round(change, change_digits),
+                    "change_pct": round(change_pct, 2),
+                    "previous_close": round(previous_close, digits)
+                }
+    except Exception as e:
+        print(f"Error fetching {label}: {e}")
+
     return None
 
 
@@ -158,42 +265,12 @@ def fetch_vix():
     Yahoo Finance에서 ^VIX 티커로 조회
     반환: { value, change, change_pct, previous_close }
     """
-    encoded_ticker = urllib.parse.quote("^VIX")
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=10d&interval=1d&includePrePost=true"
-    
-    try:
-        response = _make_request(url)
-        if response:
-            data = json.loads(response)
-            result = data.get("chart", {}).get("result", [{}])[0]
-            meta = result.get("meta", {})
-            
-            current_price = meta.get("regularMarketPrice")
-            
-            # 전일 종가: daily OHLC 데이터에서 직접 추출 (meta.chartPreviousClose는 range=10d일 때 부정확)
-            previous_close = _extract_previous_close_from_daily(result)
-            if previous_close is None:
-                previous_close = meta.get("chartPreviousClose") or meta.get("previousClose")
-            
-            if current_price and previous_close:
-                change = current_price - previous_close
-                change_pct = (change / previous_close) * 100
-                
-                return {
-                    "value": round(current_price, 2),
-                    "change": round(change, 2),
-                    "change_pct": round(change_pct, 2),
-                    "previous_close": round(previous_close, 2)
-                }
-    except Exception as e:
-        print(f"Error fetching VIX: {e}")
-    
-    return None
+    return _fetch_yahoo_quote("^VIX", "VIX")
 
 
 def fetch_market_indices():
     """
-    주요 시장 지수를 가져옵니다.
+    주요 시장 지수를 가져옵니다. (4개 지수 병렬 조회)
     - S&P 500 (^GSPC)
     - NASDAQ Composite (^IXIC)
     - NASDAQ 100 (^NDX)
@@ -206,43 +283,19 @@ def fetch_market_indices():
         "nasdaq100": {"symbol": "^NDX", "name": "NASDAQ 100"},
         "dow": {"symbol": "^DJI", "name": "DOW"}
     }
-    
-    result = {}
-    
+
+    tasks = {}
     for key, info in indices.items():
-        encoded_symbol = urllib.parse.quote(info["symbol"])
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_symbol}?range=10d&interval=1d&includePrePost=true"
-        
-        try:
-            response = _make_request(url)
-            if response:
-                data = json.loads(response)
-                chart_result = data.get("chart", {}).get("result", [{}])[0]
-                meta = chart_result.get("meta", {})
-                
-                current_price = meta.get("regularMarketPrice")
-                
-                # 전일 종가: daily OHLC 데이터에서 직접 추출 (meta.chartPreviousClose는 range=10d일 때 부정확)
-                previous_close = _extract_previous_close_from_daily(chart_result)
-                if previous_close is None:
-                    previous_close = meta.get("chartPreviousClose") or meta.get("previousClose")
-                
-                if current_price and previous_close:
-                    change = current_price - previous_close
-                    change_pct = (change / previous_close) * 100
-                    
-                    result[key] = {
-                        "name": info["name"],
-                        "value": round(current_price, 2),
-                        "change": round(change, 2),
-                        "change_pct": round(change_pct, 2),
-                        "previous_close": round(previous_close, 2)
-                    }
-        except Exception as e:
-            print(f"Error fetching {info['name']}: {e}")
-        
-        time.sleep(0.5)  # API rate limit 준수
-    
+        tasks[key] = lambda info=info: _fetch_yahoo_quote(info["symbol"], info["name"])
+
+    quotes = _run_concurrently(tasks)
+
+    result = {}
+    for key, info in indices.items():
+        quote = quotes.get(key)
+        if quote:
+            result[key] = {"name": info["name"], **quote}
+
     return result
 
 
@@ -252,37 +305,7 @@ def fetch_usd_krw():
     Yahoo Finance에서 KRW=X 티커로 조회
     반환: { value, change, change_pct, previous_close }
     """
-    encoded_ticker = urllib.parse.quote("KRW=X")
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=10d&interval=1d&includePrePost=true"
-    
-    try:
-        response = _make_request(url)
-        if response:
-            data = json.loads(response)
-            result = data.get("chart", {}).get("result", [{}])[0]
-            meta = result.get("meta", {})
-            
-            current_price = meta.get("regularMarketPrice")
-            
-            # 전일 종가: daily OHLC 데이터에서 직접 추출 (meta.chartPreviousClose는 range=10d일 때 부정확)
-            previous_close = _extract_previous_close_from_daily(result)
-            if previous_close is None:
-                previous_close = meta.get("chartPreviousClose") or meta.get("previousClose")
-            
-            if current_price and previous_close:
-                change = current_price - previous_close
-                change_pct = (change / previous_close) * 100
-                
-                return {
-                    "value": round(current_price, 2),
-                    "change": round(change, 4),
-                    "change_pct": round(change_pct, 2),
-                    "previous_close": round(previous_close, 2)
-                }
-    except Exception as e:
-        print(f"Error fetching USD/KRW: {e}")
-    
-    return None
+    return _fetch_yahoo_quote("KRW=X", "USD/KRW", change_digits=4)
 
 
 def fetch_us_treasury_10y():
@@ -291,37 +314,7 @@ def fetch_us_treasury_10y():
     Yahoo Finance에서 ^TNX 티커로 조회
     반환: { value, change, change_pct, previous_close }
     """
-    encoded_ticker = urllib.parse.quote("^TNX")
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range=10d&interval=1d&includePrePost=true"
-    
-    try:
-        response = _make_request(url)
-        if response:
-            data = json.loads(response)
-            result = data.get("chart", {}).get("result", [{}])[0]
-            meta = result.get("meta", {})
-            
-            current_price = meta.get("regularMarketPrice")
-            
-            # 전일 종가: daily OHLC 데이터에서 직접 추출 (meta.chartPreviousClose는 range=10d일 때 부정확)
-            previous_close = _extract_previous_close_from_daily(result)
-            if previous_close is None:
-                previous_close = meta.get("chartPreviousClose") or meta.get("previousClose")
-            
-            if current_price and previous_close:
-                change = current_price - previous_close
-                change_pct = (change / previous_close) * 100 if previous_close != 0 else 0
-                
-                return {
-                    "value": round(current_price, 3),
-                    "change": round(change, 3),
-                    "change_pct": round(change_pct, 2),
-                    "previous_close": round(previous_close, 3)
-                }
-    except Exception as e:
-        print(f"Error fetching US 10Y Treasury: {e}")
-    
-    return None
+    return _fetch_yahoo_quote("^TNX", "US 10Y Treasury", digits=3, change_digits=3)
 
 
 def fetch_us_dollar_index():
@@ -330,41 +323,12 @@ def fetch_us_dollar_index():
     Yahoo Finance에서 DX-Y.NYB 티커로 조회
     반환: { value, change, change_pct, previous_close }
     """
-    url = "https://query1.finance.yahoo.com/v8/finance/chart/DX-Y.NYB?range=10d&interval=1d&includePrePost=true"
-    
-    try:
-        response = _make_request(url)
-        if response:
-            data = json.loads(response)
-            result = data.get("chart", {}).get("result", [{}])[0]
-            meta = result.get("meta", {})
-            
-            current_price = meta.get("regularMarketPrice")
-            
-            # 전일 종가
-            previous_close = _extract_previous_close_from_daily(result)
-            if previous_close is None:
-                previous_close = meta.get("chartPreviousClose") or meta.get("previousClose")
-            
-            if current_price and previous_close:
-                change = current_price - previous_close
-                change_pct = (change / previous_close) * 100
-                
-                return {
-                    "value": round(current_price, 2),
-                    "change": round(change, 2),
-                    "change_pct": round(change_pct, 2),
-                    "previous_close": round(previous_close, 2)
-                }
-    except Exception as e:
-        print(f"Error fetching US Dollar Index: {e}")
-    
-    return None
+    return _fetch_yahoo_quote("DX-Y.NYB", "US Dollar Index")
 
 
 def fetch_weekly_indices_data():
     """
-    주요 지수의 주간 변동 데이터를 가져옵니다.
+    주요 지수의 주간 변동 데이터를 가져옵니다. (5개 지수 병렬 조회)
     - 미국: S&P 500 (^GSPC), NASDAQ (^IXIC), DOW (^DJI)
     - 한국: KOSPI (^KS11), KOSDAQ (^KQ11)
 
@@ -384,16 +348,20 @@ def fetch_weekly_indices_data():
         "kosdaq": {"symbol": "^KQ11", "name": "KOSDAQ"}
     }
 
-    result = {}
-
+    tasks = {}
     for key, info in indices.items():
-        weekly = _fetch_weekly_change(info["symbol"])
+        tasks[key] = lambda info=info: _fetch_weekly_change(info["symbol"])
+
+    weekly_results = _run_concurrently(tasks)
+
+    result = {}
+    for key, info in indices.items():
+        weekly = weekly_results.get(key)
         if weekly:
             result[key] = {
                 "name": info["name"],
                 **weekly
             }
-        time.sleep(0.5)  # API rate limit 준수
 
     result["timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() + 9 * 60 * 60))
 
@@ -512,7 +480,7 @@ def _fetch_weekly_change(symbol):
 
 def fetch_all_indices():
     """
-    모든 시장 인덱스 데이터를 한 번에 가져옵니다.
+    모든 시장 인덱스 데이터를 한 번에 가져옵니다. (각 항목 병렬 조회 + 60초 TTL 캐시)
     반환: {
         fear_greed: {...},
         vix: {...},
@@ -523,45 +491,32 @@ def fetch_all_indices():
         timestamp: "..."
     }
     """
-    result = {
-        "fear_greed": None,
-        "vix": None,
-        "indices": {},
-        "usd_krw": None,
-        "treasury_10y": None,
-        "us_dollar_index": None,
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() + 9 * 60 * 60))
-    }
-    
-    # Fear & Greed Index
-    result["fear_greed"] = fetch_fear_greed_index()
-    time.sleep(0.5)
-    
-    # VIX
-    result["vix"] = fetch_vix()
-    time.sleep(0.5)
-    
-    # Market Indices
-    result["indices"] = fetch_market_indices()
-    time.sleep(0.5)
-    
-    # USD/KRW
-    result["usd_krw"] = fetch_usd_krw()
-    time.sleep(0.5)
-    
-    # US 10Y Treasury
-    result["treasury_10y"] = fetch_us_treasury_10y()
-    time.sleep(0.5)
-    
-    # US Dollar Index (DXY)
-    result["us_dollar_index"] = fetch_us_dollar_index()
-    
-    return result
+    def _fetch():
+        fetched = _run_concurrently({
+            "fear_greed": fetch_fear_greed_index,
+            "vix": fetch_vix,
+            "indices": fetch_market_indices,
+            "usd_krw": fetch_usd_krw,
+            "treasury_10y": fetch_us_treasury_10y,
+            "us_dollar_index": fetch_us_dollar_index,
+        })
+
+        return {
+            "fear_greed": fetched.get("fear_greed"),
+            "vix": fetched.get("vix"),
+            "indices": fetched.get("indices") or {},
+            "usd_krw": fetched.get("usd_krw"),
+            "treasury_10y": fetched.get("treasury_10y"),
+            "us_dollar_index": fetched.get("us_dollar_index"),
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() + 9 * 60 * 60))
+        }
+
+    return _cached("all_indices", _fetch)
 
 
 def fetch_korea_market_indices():
     """
-    한국 주요 시장 지수를 가져옵니다.
+    한국 주요 시장 지수를 가져옵니다. (2개 지수 병렬 조회)
     - KOSPI (^KS11)
     - KOSDAQ (^KQ11)
     반환: { kospi: {...}, kosdaq: {...} }
@@ -572,48 +527,24 @@ def fetch_korea_market_indices():
         "kosdaq": {"symbol": "^KQ11", "name": "KOSDAQ"}
     }
 
-    result = {}
-
+    tasks = {}
     for key, info in indices.items():
-        encoded_symbol = urllib.parse.quote(info["symbol"])
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_symbol}?range=10d&interval=1d&includePrePost=true"
+        tasks[key] = lambda info=info: _fetch_yahoo_quote(info["symbol"], info["name"])
 
-        try:
-            response = _make_request(url)
-            if response:
-                data = json.loads(response)
-                chart_result = data.get("chart", {}).get("result", [{}])[0]
-                meta = chart_result.get("meta", {})
+    quotes = _run_concurrently(tasks)
 
-                current_price = meta.get("regularMarketPrice")
-
-                # 전일 종가: daily OHLC 데이터에서 직접 추출
-                previous_close = _extract_previous_close_from_daily(chart_result)
-                if previous_close is None:
-                    previous_close = meta.get("chartPreviousClose") or meta.get("previousClose")
-
-                if current_price and previous_close:
-                    change = current_price - previous_close
-                    change_pct = (change / previous_close) * 100
-
-                    result[key] = {
-                        "name": info["name"],
-                        "value": round(current_price, 2),
-                        "change": round(change, 2),
-                        "change_pct": round(change_pct, 2),
-                        "previous_close": round(previous_close, 2)
-                    }
-        except Exception as e:
-            print(f"Error fetching {info['name']}: {e}")
-
-        time.sleep(0.5)  # API rate limit 준수
+    result = {}
+    for key, info in indices.items():
+        quote = quotes.get(key)
+        if quote:
+            result[key] = {"name": info["name"], **quote}
 
     return result
 
 
 def fetch_korea_market_close_data():
     """
-    한국장 마감 요약에 필요한 데이터를 한 번에 가져옵니다.
+    한국장 마감 요약에 필요한 데이터를 한 번에 가져옵니다. (각 항목 병렬 조회 + 60초 TTL 캐시)
     - KOSPI, KOSDAQ (국내 지수)
     - USD/KRW 환율
     - (참고) 공포탐욕지수, VIX, 미국 주요 지수
@@ -627,116 +558,85 @@ def fetch_korea_market_close_data():
         timestamp: "..."
     }
     """
-    result = {
-        "korea_indices": {},
-        "usd_krw": None,
-        "fear_greed": None,
-        "vix": None,
-        "us_indices": {},
-        "date": time.strftime("%Y-%m-%d", time.gmtime(time.time() + 9 * 60 * 60)),
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() + 9 * 60 * 60))
-    }
+    def _fetch():
+        fetched = _run_concurrently({
+            "korea_indices": fetch_korea_market_indices,
+            "usd_krw": fetch_usd_krw,
+            "fear_greed": fetch_fear_greed_index,
+            "vix": fetch_vix,
+            "us_indices": fetch_market_indices,
+        })
 
-    # 국내 지수 (KOSPI, KOSDAQ)
-    result["korea_indices"] = fetch_korea_market_indices()
-    time.sleep(0.5)
+        return {
+            "korea_indices": fetched.get("korea_indices") or {},
+            "usd_krw": fetched.get("usd_krw"),
+            "fear_greed": fetched.get("fear_greed"),
+            "vix": fetched.get("vix"),
+            "us_indices": fetched.get("us_indices") or {},
+            "date": time.strftime("%Y-%m-%d", time.gmtime(time.time() + 9 * 60 * 60)),
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() + 9 * 60 * 60))
+        }
 
-    # USD/KRW 환율
-    result["usd_krw"] = fetch_usd_krw()
-    time.sleep(0.5)
+    return _cached("korea_market_close", _fetch)
 
-    # 참고 정보
-    result["fear_greed"] = fetch_fear_greed_index()
-    time.sleep(0.5)
-    result["vix"] = fetch_vix()
-    time.sleep(0.5)
-    result["us_indices"] = fetch_market_indices()
 
-    return result
+def _fetch_index_high_range(symbol, rng):
+    """
+    지정한 range의 일봉에서 유효 고가 중 최대값과 해당 날짜(UTC)를 반환합니다.
+    반환: (high, "YYYY-MM-DD") — 조회 실패 시 (None, None)
+    """
+    encoded_symbol = urllib.parse.quote(symbol)
+    url = (
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_symbol}"
+        f"?range={rng}&interval=1d&includePrePost=false"
+    )
+    response = _make_request(url)
+    if not response:
+        return None, None
+
+    try:
+        data = json.loads(response)
+        result = data.get("chart", {}).get("result", [{}])[0]
+        timestamps = result.get("timestamp", [])
+        quote = result.get("indicators", {}).get("quote", [{}])[0]
+        highs = quote.get("high", [])
+
+        # 유효한 고가 중 최대값과 해당 날짜 계산
+        best_high = None
+        best_ts = None
+        for i in range(len(timestamps)):
+            if i < len(highs) and highs[i] is not None:
+                if best_high is None or highs[i] > best_high:
+                    best_high = highs[i]
+                    best_ts = timestamps[i]
+
+        if best_high is not None and best_ts is not None:
+            return best_high, time.strftime("%Y-%m-%d", time.gmtime(best_ts))
+    except (IndexError, AttributeError, TypeError, json.JSONDecodeError):
+        pass
+
+    return None, None
 
 
 def fetch_index_highs(symbol):
     """
-    지수의 역대 최고가와 52주 최고가를 가져옵니다.
-    
+    지수의 역대 최고가와 52주 최고가를 가져옵니다. (두 요청 병렬 조회)
+
     - 역대 최고가: range=max&interval=1d (전체 기간 일봉에서 최고가)
     - 52주 최고가: range=1y&interval=1d (1년치 일봉에서 최고가)
-    
+
     반환: {
         all_time_high: float, all_time_high_date: "YYYY-MM-DD",
         week52_high: float, week52_high_date: "YYYY-MM-DD"
     } 또는 None
     """
-    encoded_symbol = urllib.parse.quote(symbol)
+    results = _run_concurrently({
+        "max": lambda: _fetch_index_high_range(symbol, "max"),
+        "week52": lambda: _fetch_index_high_range(symbol, "1y"),
+    })
 
-    all_time_high = None
-    all_time_high_date = None
-    week52_high = None
-    week52_high_date = None
-
-    # ================================================================
-    # 1. 역대 최고가: range=max&interval=1d (전체 기간 일봉)
-    # ================================================================
-    url_max = (
-        f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_symbol}"
-        f"?range=max&interval=1d&includePrePost=false"
-    )
-    response_max = _make_request(url_max)
-
-    if response_max:
-        try:
-            data = json.loads(response_max)
-            result = data.get("chart", {}).get("result", [{}])[0]
-            timestamps = result.get("timestamp", [])
-            quote = result.get("indicators", {}).get("quote", [{}])[0]
-            highs = quote.get("high", [])
-
-            # 유효한 고가 중 최대값과 해당 날짜 계산
-            best_high = None
-            best_ts = None
-            for i in range(len(timestamps)):
-                if i < len(highs) and highs[i] is not None:
-                    if best_high is None or highs[i] > best_high:
-                        best_high = highs[i]
-                        best_ts = timestamps[i]
-
-            if best_high is not None and best_ts is not None:
-                all_time_high = best_high
-                all_time_high_date = time.strftime("%Y-%m-%d", time.gmtime(best_ts))
-        except (IndexError, AttributeError, TypeError, json.JSONDecodeError):
-            pass
-
-    # ================================================================
-    # 2. 52주 최고가: range=1y&interval=1d (1년치 일봉)
-    # ================================================================
-    url_1y = (
-        f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_symbol}"
-        f"?range=1y&interval=1d&includePrePost=false"
-    )
-    response_1y = _make_request(url_1y)
-
-    if response_1y:
-        try:
-            data = json.loads(response_1y)
-            result = data.get("chart", {}).get("result", [{}])[0]
-            timestamps = result.get("timestamp", [])
-            quote = result.get("indicators", {}).get("quote", [{}])[0]
-            highs = quote.get("high", [])
-
-            # 유효한 고가 중 최대값과 해당 날짜 계산
-            best_high = None
-            best_ts = None
-            for i in range(len(timestamps)):
-                if i < len(highs) and highs[i] is not None:
-                    if best_high is None or highs[i] > best_high:
-                        best_high = highs[i]
-                        best_ts = timestamps[i]
-
-            if best_high is not None and best_ts is not None:
-                week52_high = best_high
-                week52_high_date = time.strftime("%Y-%m-%d", time.gmtime(best_ts))
-        except (IndexError, AttributeError, TypeError, json.JSONDecodeError):
-            pass
+    all_time_high, all_time_high_date = results.get("max") or (None, None)
+    week52_high, week52_high_date = results.get("week52") or (None, None)
 
     if all_time_high is None and week52_high is None:
         return None
@@ -751,7 +651,7 @@ def fetch_index_highs(symbol):
 
 def fetch_all_index_highs():
     """
-    주요 지수들의 역대 최고가와 52주 최고가를 한 번에 가져옵니다.
+    주요 지수들의 역대 최고가와 52주 최고가를 한 번에 가져옵니다. (병렬 조회)
     - 미국: S&P 500 (^GSPC), NASDAQ (^IXIC), DOW (^DJI)
     - 한국: KOSPI (^KS11), KOSDAQ (^KQ11)
     
@@ -768,17 +668,21 @@ def fetch_all_index_highs():
         "kosdaq": {"symbol": "^KQ11", "name": "KOSDAQ"}
     }
 
-    result = {}
-
+    tasks = {}
     for key, info in indices.items():
-        highs = fetch_index_highs(info["symbol"])
-        if highs:
+        tasks[key] = lambda info=info: fetch_index_highs(info["symbol"])
+
+    highs = _run_concurrently(tasks)
+
+    result = {}
+    for key, info in indices.items():
+        item = highs.get(key)
+        if item:
             result[key] = {
                 "name": info["name"],
                 "symbol": info["symbol"],
-                **highs
+                **item
             }
-        time.sleep(0.5)  # API rate limit 준수
 
     return result
 

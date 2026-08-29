@@ -7,6 +7,8 @@ Weekly market summary report module.
 
 import time
 import html
+from concurrent.futures import ThreadPoolExecutor
+
 import database
 import stock_api
 import market_indices
@@ -65,25 +67,28 @@ def fetch_weekly_report_data():
     except Exception as e:
         print(f"Error fetching weekly indices data: {e}")
 
-    # 2. 관심 종목 주간 변동
+    # 2. 관심 종목 주간 변동 (병렬 조회)
     try:
         # 모든 구독자의 고유 티커 목록
         tickers = database.get_unique_tickers()
-        for ticker in tickers:
+
+        def _fetch_stock_weekly(ticker):
             try:
-                weekly = stock_api.fetch_weekly_change(ticker)
-                if weekly:
-                    result["stocks"].append(weekly)
-                time.sleep(0.5)  # API rate limit 준수
+                return stock_api.fetch_weekly_change(ticker)
             except Exception as e:
                 print(f"Error fetching weekly change for {ticker}: {e}")
+                return None
+
+        with ThreadPoolExecutor(max_workers=min(8, max(1, len(tickers)))) as executor:
+            for weekly in executor.map(_fetch_stock_weekly, tickers):
+                if weekly:
+                    result["stocks"].append(weekly)
     except Exception as e:
         print(f"Error fetching subscribed stocks weekly data: {e}")
 
     # 3. 참고 정보 (공포탐욕지수, VIX)
     try:
         result["fear_greed"] = market_indices.fetch_fear_greed_index()
-        time.sleep(0.5)
         result["vix"] = market_indices.fetch_vix()
     except Exception as e:
         print(f"Error fetching reference data: {e}")
