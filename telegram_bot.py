@@ -4,6 +4,7 @@ import ssl
 import time
 import threading
 import html
+from concurrent.futures import ThreadPoolExecutor
 from config import TELEGRAM_BOT_TOKEN
 import database
 import stock_api
@@ -465,102 +466,16 @@ class TelegramBot:
         # (부분 실패 시 누락 종목만 개별 조회로 보완됨)
         price_cache = stock_api.fetch_current_prices_batch(subscriptions) if stock_api.is_toss_enabled() else None
 
-        for idx, ticker in enumerate(subscriptions, 1):
-            # 빠른 현재가 조회 (프리장/애프터장 포함, 토스 설정 시 배치 캐시 우선 사용)
-            price_data = (price_cache or {}).get(ticker) or stock_api.fetch_current_price_only(ticker)
-            if price_data:
-                price = price_data['price']
-                prev_close = price_data.get('previous_close')
-                currency = price_data['currency']
-                
-                # 전일 종가가 없으면 전체 데이터에서 가져오기 (fallback)
-                full_data = None
-                if prev_close is None or prev_close <= 0:
-                    full_data = stock_api.fetch_stock_data(ticker)
-                    if full_data:
-                        prev_close = full_data.get("previous_close")
-                
-                if full_data is None:
-                    full_data = stock_api.fetch_stock_data(ticker)
-                
-                stock_name = full_data.get("name", ticker) if full_data else ticker
-                
-                # 전일 대비 등락률 계산
-                change_str = ""
-                if prev_close is not None and prev_close > 0:
-                    pct_change = ((price - prev_close) / prev_close) * 100
-                    if abs(pct_change) < 0.01:
-                        change_str = " (보합)"
-                    elif pct_change > 0:
-                        change_str = f" (📈 <b>+{pct_change:.2f}%</b>)"
-                    else:
-                        change_str = f" (📉 <b>{pct_change:.2f}%</b>)"
-                
-                # 추천 등급 조회 (predictor 사용)
-                rec_str = ""
-                try:
-                    if full_data:
-                        analysis = predictor.predict_buy_sell_prices(full_data)
-                        if "error" not in analysis:
-                            rec = analysis["recommendation"]
-                            conf = analysis["confidence"]
-                            if "STRONG BUY" in rec:
-                                rec_str = f" 🟢🔥 <b>{rec}</b> ({conf}%)"
-                            elif "BUY" in rec:
-                                rec_str = f" 🟢 <b>{rec}</b> ({conf}%)"
-                            elif "STRONG SELL" in rec:
-                                rec_str = f" 🔴🔥 <b>{rec}</b> ({conf}%)"
-                            elif "SELL" in rec:
-                                rec_str = f" 🔴 <b>{rec}</b> ({conf}%)"
-                            else:
-                                rec_str = f" 🟡 <b>{rec}</b> ({conf}%)"
-                except Exception:
-                    pass
-                
-                lines.append(f"{idx}. <b>{html.escape(stock_name)}</b> (<code>{ticker}</code>): {price:.2f} {currency}{change_str}{rec_str}")
-            else:
-                # fallback: 전체 데이터 조회
-                data = stock_api.fetch_stock_data(ticker)
-                if data:
-                    price = data['current_price']
-                    prev_close = data.get('previous_close')
-                    currency = data['currency']
-                    stock_name = data.get("name", ticker)
-                    
-                    change_str = ""
-                    if prev_close is not None and prev_close > 0:
-                        pct_change = ((price - prev_close) / prev_close) * 100
-                        if abs(pct_change) < 0.01:
-                            change_str = " (보합)"
-                        elif pct_change > 0:
-                            change_str = f" (📈 <b>+{pct_change:.2f}%</b>)"
-                        else:
-                            change_str = f" (📉 <b>{pct_change:.2f}%</b>)"
-                    
-                    # 추천 등급 조회
-                    rec_str = ""
-                    try:
-                        analysis = predictor.predict_buy_sell_prices(data)
-                        if "error" not in analysis:
-                            rec = analysis["recommendation"]
-                            conf = analysis["confidence"]
-                            if "STRONG BUY" in rec:
-                                rec_str = f" 🟢🔥 <b>{rec}</b> ({conf}%)"
-                            elif "BUY" in rec:
-                                rec_str = f" 🟢 <b>{rec}</b> ({conf}%)"
-                            elif "STRONG SELL" in rec:
-                                rec_str = f" 🔴🔥 <b>{rec}</b> ({conf}%)"
-                            elif "SELL" in rec:
-                                rec_str = f" 🔴 <b>{rec}</b> ({conf}%)"
-                            else:
-                                rec_str = f" 🟡 <b>{rec}</b> ({conf}%)"
-                    except Exception:
-                        pass
-                    
-                    lines.append(f"{idx}. <b>{html.escape(stock_name)}</b> (<code>{ticker}</code>): {price:.2f} {currency}{change_str}{rec_str}")
-                else:
-                    lines.append(f"{idx}. <code>{ticker}</code>: 데이터 로드 실패 ⚠️")
-        
+        # 종목별 데이터 조회를 병렬로 실행 (종목 수와 무관하게 가장 느린 종목 1개의 시간만 소요)
+        max_workers = min(8, max(1, len(subscriptions)))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            row_futures = [
+                executor.submit(self._build_list_row, idx, ticker, price_cache)
+                for idx, ticker in enumerate(subscriptions, 1)
+            ]
+            for future in row_futures:
+                lines.append(future.result())
+
         # 결과 메시지 전송 후 "가져오는 중..." 메시지 삭제
         self.send_message(chat_id, "\n".join(lines), reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
         if loading_msg_id:
@@ -568,6 +483,85 @@ class TelegramBot:
                 self.delete_message(chat_id, loading_msg_id)
             except Exception:
                 pass
+
+    def _build_list_row(self, idx, ticker, price_cache=None):
+        """
+        /list 출력의 종목 1줄을 생성합니다. (병렬 실행용 — 항상 문자열을 반환)
+
+        전체 데이터(fetch_stock_data)를 1회 조회해 현재가/전일종가/종목명/기술적 지표를
+        모두 확보합니다. 기존에는 가벼운 현재가 조회와 전체 데이터 조회를 각각 순차 호출해
+        요청이 2배 발생했으나, 전체 데이터에 동일한 정보가 모두 포함되어 있어 1회로 통합했습니다.
+        전체 조회 실패 시에만 가벼운 현재가 조회로 폴백합니다.
+        """
+        price_cache = price_cache or {}
+        try:
+            # price_cache를 함께 전달해 토스 사용 시 개별 현재가 재요청을 생략
+            full_data = stock_api.fetch_stock_data(ticker, price_cache)
+            if full_data:
+                cached = price_cache.get(ticker) or {}
+                price = cached.get("price") or full_data["current_price"]
+                prev_close = cached.get("previous_close")
+                if prev_close is None or prev_close <= 0:
+                    prev_close = full_data.get("previous_close")
+                currency = cached.get("currency") or full_data["currency"]
+                stock_name = full_data.get("name") or ticker
+
+                change_str = self._build_change_str(price, prev_close)
+                rec_str = self._build_recommendation_str(full_data)
+
+                return (f"{idx}. <b>{html.escape(stock_name)}</b> (<code>{ticker}</code>): "
+                        f"{price:.2f} {currency}{change_str}{rec_str}")
+
+            # 전체 데이터 조회 실패 시: 가벼운 현재가 조회로 폴백
+            price_data = price_cache.get(ticker) or stock_api.fetch_current_price_only(ticker)
+            if price_data:
+                price = price_data["price"]
+                prev_close = price_data.get("previous_close")
+                currency = price_data.get("currency") or "USD"
+                change_str = self._build_change_str(price, prev_close)
+
+                return (f"{idx}. <b>{html.escape(ticker)}</b> (<code>{ticker}</code>): "
+                        f"{price:.2f} {currency}{change_str}")
+
+            return f"{idx}. <code>{ticker}</code>: 데이터 로드 실패 ⚠️"
+        except Exception as e:
+            print(f"Error building list row for {ticker}: {e}")
+            return f"{idx}. <code>{ticker}</code>: 데이터 로드 실패 ⚠️"
+
+    @staticmethod
+    def _build_change_str(price, prev_close):
+        """전일 종가 대비 등락률 문자열을 생성합니다."""
+        if prev_close is not None and prev_close > 0:
+            pct_change = ((price - prev_close) / prev_close) * 100
+            if abs(pct_change) < 0.01:
+                return " (보합)"
+            elif pct_change > 0:
+                return f" (📈 <b>+{pct_change:.2f}%</b>)"
+            else:
+                return f" (📉 <b>{pct_change:.2f}%</b>)"
+        return ""
+
+    @staticmethod
+    def _build_recommendation_str(full_data):
+        """기술적 분석 기반 추천 등급 문자열을 생성합니다."""
+        try:
+            analysis = predictor.predict_buy_sell_prices(full_data)
+            if "error" not in analysis:
+                rec = analysis["recommendation"]
+                conf = analysis["confidence"]
+                if "STRONG BUY" in rec:
+                    return f" 🟢🔥 <b>{rec}</b> ({conf}%)"
+                elif "BUY" in rec:
+                    return f" 🟢 <b>{rec}</b> ({conf}%)"
+                elif "STRONG SELL" in rec:
+                    return f" 🔴🔥 <b>{rec}</b> ({conf}%)"
+                elif "SELL" in rec:
+                    return f" 🔴 <b>{rec}</b> ({conf}%)"
+                else:
+                    return f" 🟡 <b>{rec}</b> ({conf}%)"
+        except Exception:
+            pass
+        return ""
 
     def _handle_predict(self, chat_id, arg, reply_to_message_id=None, message_thread_id=None):
         if not arg:

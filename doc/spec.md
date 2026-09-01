@@ -181,7 +181,8 @@ _process_ticker_alerts()
 | 주가 OHLCV / 현재가 | Yahoo Finance `v8/finance/chart` | 1m/5m/1d/1wk, `includePrePost=true` |
 | 종목명 | Yahoo Finance | - |
 | 공포탐욕지수 | CNN Money `production.dataviz.cnn.io` | 공식 API |
-| VIX / 지수 / 환율 / 국채 / 달러 | Yahoo Finance (^VIX, ^GSPC 등) | 표준시 DST 변환 포함 |
+| VIX / 지수 / 국채 / 달러 | Yahoo Finance (^VIX, ^GSPC 등) | 표준시 DST 변환 포함 |
+| USD/KRW 환율 | Daum 금융 `finance.daum.net/api/exchanges` (finance.daum.net/exchanges와 동일 데이터) | HTML 스크래핑 없이 경량 JSON 1회 호출 |
 
 - 모든 `urllib` 요청에 재시도(기본 3회, 2초 간격) + 타임아웃 부여
 - 종목당 스캔 사이 1초 쿨다운 → API rate limit 대응

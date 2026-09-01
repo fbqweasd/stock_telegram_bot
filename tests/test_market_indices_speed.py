@@ -69,6 +69,98 @@ class FetchYahooQuoteTests(unittest.TestCase):
         with patch.object(market_indices, "_make_request", return_value=None):
             self.assertIsNone(market_indices._fetch_yahoo_quote("^VIX", "VIX"))
 
+def _make_daum_exchange_response(items):
+    """Daum 금융 환율 summaries API 응답 형태의 최소 JSON을 만듭니다."""
+    return json.dumps({"data": items})
+
+
+def _make_daum_usd_item(base_price, change, change_price, change_rate):
+    """Daum 금융 USD/KRW 항목을 만듭니다."""
+    return {
+        "symbolCode": "FRX.KRWUSD",
+        "currencyCode": "USD",
+        "name": "미국 (USD/KRW)",
+        "basePrice": base_price,
+        "change": change,
+        "changePrice": change_price,
+        "changeRate": change_rate,
+    }
+
+
+class FetchUsdKrwTests(unittest.TestCase):
+    def test_daum_rise(self):
+        """상승장: changePrice는 절대값이며 changeRate 부호로 등락폭/등락률을 계산해야 한다"""
+        payload = _make_daum_exchange_response([
+            _make_daum_usd_item(1374.0, "RISE", 4.5, 0.0032858708),
+            {"currencyCode": "JPY", "basePrice": 858.32},
+        ])
+        with patch.object(market_indices, "_make_request", return_value=payload):
+            result = market_indices.fetch_usd_krw()
+
+        self.assertEqual(result["value"], 1374.0)
+        self.assertEqual(result["change"], 4.5)
+        self.assertAlmostEqual(result["change_pct"], 0.33, places=2)
+        self.assertEqual(result["previous_close"], 1369.5)
+
+    def test_daum_fall(self):
+        """하락장: 등락폭이 음수로 변환되어야 한다"""
+        payload = _make_daum_exchange_response([
+            _make_daum_usd_item(1370.0, "FALL", 6.0, -0.0043731778),
+        ])
+        with patch.object(market_indices, "_make_request", return_value=payload):
+            result = market_indices.fetch_usd_krw()
+
+        self.assertEqual(result["value"], 1370.0)
+        self.assertEqual(result["change"], -6.0)
+        self.assertAlmostEqual(result["change_pct"], -0.44, places=2)
+        self.assertEqual(result["previous_close"], 1376.0)
+
+    def test_daum_even(self):
+        """보합: 등락폭/등락률이 0이어야 한다"""
+        payload = _make_daum_exchange_response([
+            _make_daum_usd_item(1370.0, "EVEN", 0.0, 0.0),
+        ])
+        with patch.object(market_indices, "_make_request", return_value=payload):
+            result = market_indices.fetch_usd_krw()
+
+        self.assertEqual(result["value"], 1370.0)
+        self.assertEqual(result["change"], 0.0)
+        self.assertEqual(result["change_pct"], 0.0)
+
+    def test_daum_failure_falls_back_to_yahoo(self):
+        """Daum API 실패 시에만 Yahoo KRW=X로 폴백해야 한다"""
+        yahoo_payload = _make_chart_response(1350.0, 1330.0)
+        calls = {"n": 0}
+
+        def fake_request(url, *args, **kwargs):
+            calls["n"] += 1
+            if "finance.daum.net" in url:
+                return None
+            return yahoo_payload
+
+        with patch.object(market_indices, "_make_request", side_effect=fake_request):
+            result = market_indices.fetch_usd_krw()
+
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(result["value"], 1350.0)
+
+    def test_daum_success_does_not_call_yahoo(self):
+        """Daum이 성공하면 Yahoo는 호출하지 않아야 한다 (부하 최소화)"""
+        payload = _make_daum_exchange_response([
+            _make_daum_usd_item(1374.0, "RISE", 4.5, 0.0032858708),
+        ])
+        calls = {"n": 0}
+
+        def fake_request(url, *args, **kwargs):
+            calls["n"] += 1
+            return payload
+
+        with patch.object(market_indices, "_make_request", side_effect=fake_request):
+            result = market_indices.fetch_usd_krw()
+
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual(result["value"], 1374.0)
+
 
 class FetchMarketIndicesTests(unittest.TestCase):
     def _fake_request_factory(self, responses):

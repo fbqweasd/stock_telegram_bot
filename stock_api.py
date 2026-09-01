@@ -3,6 +3,7 @@ import urllib.parse
 import json
 import ssl
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import toss_api
 
@@ -72,15 +73,21 @@ def fetch_current_prices_batch(tickers):
             # 배치 요청 자체가 실패/빈 응답인 경우 → 심볼별 토스 재시도는 중복 실패 호출이므로 생략
             toss_batch_broken = True
 
-    # 2순위: 누락 종목만 개별 조회 (폴백)
+    # 2순위: 누락 종목만 개별 조회 (폴백, 병렬 처리)
     # 배치가 부분 성공한 경우 누락 종목은 토스 개별 재시도 후 Yahoo로 폴백
-    for ticker in missing:
-        try:
-            data = fetch_current_price_only(ticker, allow_toss=not toss_batch_broken)
-        except Exception:
-            data = None
-        if data:
-            result[ticker] = data
+    if missing:
+        def _fetch_missing(ticker):
+            try:
+                return ticker, fetch_current_price_only(ticker, allow_toss=not toss_batch_broken)
+            except Exception:
+                return ticker, None
+
+        workers = min(8, len(missing))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            # executor.map은 입력 순서를 유지하므로 결과 dict의 순서도 유지됨
+            for ticker, data in executor.map(_fetch_missing, missing):
+                if data:
+                    result[ticker] = data
     return result
 
 

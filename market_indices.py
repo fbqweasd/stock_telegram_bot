@@ -103,7 +103,7 @@ def _fetch_yahoo_quote(symbol, label, digits=2, change_digits=2):
     """
     Yahoo Finance chart API에서 단일 시세(지수/환율 등)를 조회합니다.
     range=10d&interval=1d 데이터에서 현재가(regularMarketPrice)와 전일 종가를 추출해
-    등락을 계산합니다. fetch_vix/fetch_usd_krw 등 동일 패턴 함수들의 공통 구현입니다.
+    등락을 계산합니다. fetch_vix 등 동일 패턴 함수들과 fetch_usd_krw(폴백)의 공통 구현입니다.
 
     digits: value/previous_close 반올림 자릿수 (예: 국채 수익률 3)
     change_digits: change 반올림 자릿수 (예: 환율 4)
@@ -299,12 +299,66 @@ def fetch_market_indices():
     return result
 
 
+def _fetch_daum_usd_krw():
+    """
+    Daum 금융 (finance.daum.net/exchanges) 내부 JSON API에서 USD/KRW 환율을 조회합니다.
+    - 웹페이지가 사용하는 것과 동일한 경량 JSON API (HTML 스크래핑 불필요, JSON 1회 호출)
+    - basePrice(매매기준율), changePrice(등락폭), changeRate(등락률)를 한 번에 제공
+    반환: { value, change, change_pct, previous_close } 또는 None
+    """
+    url = "https://finance.daum.net/api/exchanges/summaries?page=1&perPage=20&locale=ko"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://finance.daum.net/exchanges",
+        "apiKey": "daumfinance",
+    }
+
+    try:
+        response = _make_request(url, headers=headers)
+        if not response:
+            return None
+
+        data = json.loads(response)
+        for item in data.get("data", []):
+            if item.get("currencyCode") != "USD":
+                continue
+
+            value = item.get("basePrice")
+            if value is None:
+                return None
+
+            change_price = item.get("changePrice") or 0.0   # 등락폭 (절대값)
+            change_rate = item.get("changeRate") or 0.0     # 등락률 (부호 포함)
+
+            # 등락폭은 부호 없는 절대값이므로 등락률의 부호를 적용
+            change = change_price if change_rate > 0 else -change_price if change_rate < 0 else 0.0
+
+            value = float(value)
+            change = float(change)
+            change_pct = float(change_rate) * 100
+
+            return {
+                "value": round(value, 2),
+                "change": round(change, 2),
+                "change_pct": round(change_pct, 2),
+                "previous_close": round(value - change, 2),
+            }
+    except Exception as e:
+        print(f"Error fetching USD/KRW from Daum: {e}")
+
+    return None
+
+
 def fetch_usd_krw():
     """
     USD/KRW 환율을 가져옵니다.
-    Yahoo Finance에서 KRW=X 티커로 조회
+    1순위: Daum 금융 JSON API (finance.daum.net/exchanges와 동일 실시간 데이터)
+    2순위: Yahoo Finance (KRW=X, Daum 조회 실패 시에만 폴백)
     반환: { value, change, change_pct, previous_close }
     """
+    result = _fetch_daum_usd_krw()
+    if result is not None:
+        return result
     return _fetch_yahoo_quote("KRW=X", "USD/KRW", change_digits=4)
 
 
