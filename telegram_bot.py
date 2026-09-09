@@ -11,6 +11,7 @@ import stock_api
 import predictor
 import market_indices
 import weekly_report
+import market_events
 
 # Telegram BotCommand list for auto-complete menu
 COMMANDS = [
@@ -27,6 +28,7 @@ COMMANDS = [
     {"command": "alerts", "description": "가격 변동 알림 설정/조회"},
     {"command": "alarms", "description": "🔔 알람 수신 수준 선택 (버튼으로 설정)"},
     {"command": "weekly", "description": "지난주 주요지수 및 관심종목 주간 요약 리포트"},
+    {"command": "calendar", "description": "이번 주 한미 증시 휴장·만기·조기폐장 일정"},
 ]
 
 class TelegramBot:
@@ -269,7 +271,9 @@ class TelegramBot:
             "/weekly": "/weekly",
             "/주간": "/weekly",
             "/주간리포트": "/weekly",
-            "/w": "/weekly"
+            "/w": "/weekly",
+            "/calendar": "/calendar",
+            "/일정": "/calendar"
         }
         
         # 명령어 정규화
@@ -301,6 +305,8 @@ class TelegramBot:
             self._handle_alerts(chat_id, arg, reply_to_message_id, message_thread_id)
         elif normalized_cmd == "/alarms":
             self._handle_alarm_settings(chat_id, reply_to_message_id, message_thread_id)
+        elif normalized_cmd == "/calendar":
+            self._handle_calendar(chat_id, reply_to_message_id, message_thread_id)
         elif normalized_cmd == "/weekly":
             self._handle_weekly(chat_id, reply_to_message_id, message_thread_id)
         else:
@@ -340,6 +346,7 @@ class TelegramBot:
             "<i>공포탐욕지수, VIX, 주요 지수(S&P500, NASDAQ, NASDAQ 100, DOW), 환율, 국채수익률을 한눈에 확인</i>\n\n"
             "📌 <b>/korea</b> 또는 <b>/한국</b> 또는 <b>/kr</b> - 한국 시장(KOSPI/KOSDAQ) 및 원/달러 환율을 조회합니다.\n\n"
             "📌 <b>/weekly</b> 또는 <b>/주간</b> 또는 <b>/w</b> - 지난주 주요 지수 및 관심 종목의 주간 변화 요약 리포트를 제공합니다.\n"
+            "📌 <b>/calendar</b> 또는 <b>/일정</b> - 이번 주 한국·미국 증시 주요 일정 (월요일 08:00 자동 알림).\n"
             "<i>주요 지수(S&P500, NASDAQ, DOW, KOSPI, KOSDAQ)와 구독 중인 종목의 주간 변동을 한눈에 확인</i>\n\n"
             "📌 <b>/alarms</b> 또는 <b>/알람</b> - 알람 수신 수준을 버튼으로 선택합니다.\n"
             "<i>모두 끄기 / 시장 알림만 / 중요 알림만 / 모든 알람 중에서 선택 가능</i>\n\n"
@@ -1024,7 +1031,7 @@ class TelegramBot:
             "🔕 <b>모든 알람 받지 않음</b>\n"
             "<i>자동 알람을 완전히 끕니다.</i>\n\n"
             "🌍 <b>시장 알림만</b>\n"
-            "<i>장 마감 요약(미국/한국), 주간 리포트, 극단적 시장 조건,\n"
+            "<i>장 마감 요약(미국/한국), 주간 리포트·주식 일정, 극단적 시장 조건,\n"
             "지수 최고치 돌파 등 종목과 무관한 시장 메시지만 받습니다.</i>\n\n"
             "⭐ <b>중요 알림 + 시장 알림</b>\n"
             "<i>시장 알림에 더해 개별 종목의 정말 중요한 알림만 받습니다.\n"
@@ -1264,6 +1271,15 @@ class TelegramBot:
                 self.delete_message(chat_id, loading_msg_id)
             except Exception:
                 pass
+
+    def _handle_calendar(self, chat_id, reply_to_message_id=None, message_thread_id=None):
+        try:
+            report = market_events.format_weekly_events(market_events.fetch_weekly_events())
+        except Exception as exc:
+            print(f"Error collecting market events: {exc}")
+            report = "⚠️ 주식 일정을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요."
+        self.send_message(chat_id, report, reply_to_message_id=reply_to_message_id,
+                          message_thread_id=message_thread_id)
 
     def _handle_weekly(self, chat_id, reply_to_message_id=None, message_thread_id=None):
         """

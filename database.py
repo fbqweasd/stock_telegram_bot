@@ -151,6 +151,15 @@ def init_db():
             )
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS weekly_event_sends (
+                chat_id INTEGER NOT NULL,
+                week_start TEXT NOT NULL,
+                sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (chat_id, week_start)
+            )
+        """)
+
         # Recommendation alerts: STRONG BUY/STRONG SELL tracking
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS recommendation_alerts (
@@ -344,6 +353,22 @@ def record_daily_alert(chat_id, ticker, alert_date, threshold_pct, direction):
 # Weekly report tracking (주간 리포트 전송 기록)
 # 동일한 주(week_start)에는 1번만 전송하도록 관리
 # ================================================================
+
+def has_sent_weekly_events(chat_id, week_start):
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT 1 FROM weekly_event_sends WHERE chat_id = ? AND week_start = ?",
+            (chat_id, week_start),
+        ).fetchone() is not None
+
+
+def record_weekly_events_send(chat_id, week_start):
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO weekly_event_sends (chat_id, week_start) VALUES (?, ?)",
+            (chat_id, week_start),
+        )
+
 
 def has_sent_weekly_report(chat_id, week_start):
     """

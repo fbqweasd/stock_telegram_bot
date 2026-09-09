@@ -9,6 +9,7 @@ import predictor
 import market_indices
 import market_calendar
 import weekly_report
+import market_events
 
 class AlertScheduler:
     def __init__(self, bot_instance):
@@ -16,6 +17,7 @@ class AlertScheduler:
         self.is_running = False
         self.scheduler_thread = None
         self.korea_close_thread = None
+        self.weekly_events_thread = None
         self._stop_event = threading.Event()
         self.last_extreme_check_date = None
         self.last_us_market_close_alert_date = None
@@ -32,6 +34,10 @@ class AlertScheduler:
             target=self._run_korea_close_loop, daemon=True, name="korea-market-close"
         )
         self.korea_close_thread.start()
+        self.weekly_events_thread = threading.Thread(
+            target=self._run_weekly_events_loop, daemon=True, name="weekly-market-events"
+        )
+        self.weekly_events_thread.start()
         self.scheduler_thread.start()
         print("Alert Scheduler Thread Started.")
 
@@ -84,6 +90,41 @@ class AlertScheduler:
             # 네트워크 조회가 진행 중이면 겹쳐서 실행하지 않습니다.
             self._stop_event.wait(10)
 
+    def _weekly_events_wait_seconds(self):
+        now = market_calendar.get_korea_now()
+        if now.weekday() == 0 and now.hour < 8:
+            due = now.replace(hour=8, minute=0, second=0, microsecond=0)
+            return min(60.0, (due - now).total_seconds())
+        return 60.0
+
+    def _run_weekly_events_loop(self):
+        """Independent clock: send at Monday 08:00 KST; retry until midnight."""
+        while not self._stop_event.is_set():
+            try:
+                self._check_weekly_events()
+            except Exception as exc:
+                print(f"Error in weekly market events scheduler: {exc}")
+            self._stop_event.wait(self._weekly_events_wait_seconds())
+
+    def _check_weekly_events(self):
+        now = market_calendar.get_korea_now()
+        if now.weekday() != 0 or now.hour < 8:
+            return
+        week_start = now.date().isoformat()
+        recipients = [chat_id for chat_id in sorted({
+            chat_id for chat_id, _ in database.get_all_subscriptions()
+        }) if database.should_send_alert(chat_id, is_market_wide=True)
+            and not database.has_sent_weekly_events(chat_id, week_start)]
+        if not recipients:
+            return
+        report = market_events.format_weekly_events(market_events.fetch_weekly_events(now))
+        for chat_id in recipients:
+            try:
+                if self._send_alert_with_topic(chat_id, report) is not None:
+                    database.record_weekly_events_send(chat_id, week_start)
+            except Exception as exc:
+                print(f"Error sending weekly events to {chat_id}: {exc}")
+
     def _send_alert_with_topic(self, chat_id, text):
         """
         Send message to saved topic, fallback to General if topic fails.
@@ -93,10 +134,10 @@ class AlertScheduler:
         sent = self.bot.send_message(chat_id, text, message_thread_id=topic_id)
         if sent is None:
             if topic_id is not None:
-                print(f"⚠️ 토픽({topic_id})으로 전송 실패 → 토픽 없이 재시도 (chat: {chat_id})")
+                print(f"Topic {topic_id} failed; retrying without topic (chat: {chat_id})")
                 sent = self.bot.send_message(chat_id, text)
             else:
-                print(f"⚠️ 알림 전송 실패 (chat: {chat_id})")
+                print(f"Alert delivery failed (chat: {chat_id})")
         return sent
 
     def _check_weekly_report(self):
