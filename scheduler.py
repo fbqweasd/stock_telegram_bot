@@ -15,6 +15,8 @@ class AlertScheduler:
         self.bot = bot_instance
         self.is_running = False
         self.scheduler_thread = None
+        self.korea_close_thread = None
+        self._stop_event = threading.Event()
         self.last_extreme_check_date = None
         self.last_us_market_close_alert_date = None
         self.last_korea_market_close_alert_date = None
@@ -22,14 +24,22 @@ class AlertScheduler:
 
     def start(self):
         """Start the background alert scheduler thread."""
+        if self.is_running:
+            return
         self.is_running = True
+        self._stop_event.clear()
         self.scheduler_thread = threading.Thread(target=self._run_loop, daemon=True)
+        self.korea_close_thread = threading.Thread(
+            target=self._run_korea_close_loop, daemon=True, name="korea-market-close"
+        )
+        self.korea_close_thread.start()
         self.scheduler_thread.start()
         print("Alert Scheduler Thread Started.")
 
     def stop(self):
         """Stop the background alert scheduler."""
         self.is_running = False
+        self._stop_event.set()
         print("Stopping Alert Scheduler...")
 
     def _run_loop(self):
@@ -39,7 +49,6 @@ class AlertScheduler:
         while self.is_running:
             try:
                 self._check_weekly_report()
-                self._check_korea_market_close_alert()
                 self._check_us_market_close_alert()
                 self._check_extreme_market_conditions()
                 self._check_index_high_breakouts()
@@ -55,6 +64,29 @@ class AlertScheduler:
                 if not self.is_running:
                     break
                 time.sleep(1)
+
+    def _korea_close_wait_seconds(self):
+        """KST 15:30까지 대기하되 시스템 시각을 최소 1분마다 재확인합니다."""
+        now = market_calendar.get_korea_now()
+        if (self.last_korea_market_close_alert_date == now.strftime("%Y-%m-%d")
+                or not market_calendar.is_korea_trading_day(now)):
+            return 60.0
+        close_at = now.replace(hour=15, minute=30, second=0, microsecond=0)
+        return min(60.0, max(0.0, (close_at - now).total_seconds()))
+
+    def _run_korea_close_loop(self):
+        """일반 종목 스캔과 독립적으로 15:30에 조회하고 미확인 시 10초 뒤 재시도."""
+        while not self._stop_event.is_set():
+            try:
+                delay = self._korea_close_wait_seconds()
+                if delay > 0:
+                    self._stop_event.wait(delay)
+                    continue
+                self._check_korea_market_close_alert()
+            except Exception as e:
+                print(f"Error in Korea market close scheduler: {e}")
+            # 네트워크 조회가 진행 중이면 겹쳐서 실행하지 않습니다.
+            self._stop_event.wait(10)
 
     def _send_alert_with_topic(self, chat_id, text):
         """
@@ -188,7 +220,7 @@ class AlertScheduler:
 
     def _check_korea_market_close_alert(self):
         """
-        한국장 마감 후 (한국 시간 15:30~16:59) 시장 요약 알림을 전송합니다.
+        한국장 마감 후 (한국 시간 15:30 이후) 종가 확인 시 시장 요약을 전송합니다.
         하루에 한 번만 전송됩니다.
         휴장일(주말/한국 공휴일)에는 전송하지 않습니다.
         """
@@ -201,11 +233,11 @@ class AlertScheduler:
         if self.last_korea_market_close_alert_date == today_str:
             return
 
-        # 한국 시간 15:30~16:59 사이에만 전송 (정규장 마감 이후 요약)
+        # 종가 반영이 늦어져도 당일에는 다음 주기에 계속 재시도합니다.
         if hour == 15:
             if now_kst.minute < 30:
                 return
-        elif hour != 16:
+        elif hour < 15:
             return
 
         # 휴장일(주말/한국 공휴일)에는 알림을 보내지 않음
@@ -221,7 +253,10 @@ class AlertScheduler:
             print("🇰🇷 Sending Korea market close summary...")
 
             # 시장 인덱스 데이터 가져오기
-            data = market_indices.fetch_korea_market_close_data()
+            data = market_indices.fetch_korea_market_close_data(today_str)
+            if not data:
+                print("Korea market closing prices are not ready; retrying next cycle.")
+                return
 
             # 리포트 생성
             report_text = market_indices.format_korea_market_close_report(data)

@@ -270,8 +270,9 @@ class AggregateFetchTests(unittest.TestCase):
         self.assertEqual(first, second)
 
     def test_fetch_korea_market_close_data(self):
-        with patch.object(market_indices, "fetch_korea_market_indices",
-                          return_value={"kospi": {"name": "KOSPI", "value": 2650.0}}), \
+        with patch.object(market_indices, "fetch_korea_market_closing_indices",
+                          return_value={"kospi": {"name": "KOSPI", "value": 2650.0},
+                                        "kosdaq": {"name": "KOSDAQ", "value": 900.0}}), \
              patch.object(market_indices, "fetch_usd_krw", return_value={"value": 1350.0}), \
              patch.object(market_indices, "fetch_fear_greed_index", return_value=None), \
              patch.object(market_indices, "fetch_vix", return_value=None), \

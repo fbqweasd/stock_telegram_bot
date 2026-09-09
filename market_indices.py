@@ -13,6 +13,9 @@ import json
 import ssl
 import time
 import threading
+import math
+from datetime import datetime, timedelta, timezone
+import market_calendar
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 요청 기본값 (실패 시에도 빠르게 포기하도록 타임아웃/재시도를 짧게 유지)
@@ -596,7 +599,69 @@ def fetch_korea_market_indices():
     return result
 
 
-def fetch_korea_market_close_data():
+def _fetch_korea_index_close(symbol, label, trading_date):
+    """당일 정규장 종료까지 반영된 일봉만 종가로 사용합니다."""
+    kst = timezone(timedelta(hours=9))
+    close_at = datetime.strptime(trading_date, "%Y-%m-%d").replace(
+        hour=15, minute=30, tzinfo=kst
+    ).timestamp()
+    url = (
+        "https://query1.finance.yahoo.com/v8/finance/chart/"
+        f"{urllib.parse.quote(symbol)}?range=10d&interval=1d&includePrePost=false"
+    )
+    try:
+        response = _make_request(url)
+        if not response:
+            return None
+        result = json.loads(response)["chart"]["result"][0]
+        meta = result.get("meta", {})
+        # 특별 거래일의 연장된 정규장도 종료 전에는 보내지 않습니다.
+        session_end = meta.get("currentTradingPeriod", {}).get("regular", {}).get("end")
+        if session_end and datetime.fromtimestamp(session_end, kst).date().isoformat() == trading_date:
+            close_at = max(close_at, session_end)
+        quote_time = meta.get("regularMarketTime")
+        if (not quote_time or quote_time < close_at
+                or datetime.fromtimestamp(quote_time, kst).date().isoformat() != trading_date):
+            return None
+
+        closes = result["indicators"]["quote"][0].get("close", [])
+        daily = {}
+        for ts, value in zip(result.get("timestamp", []), closes):
+            if ts is not None:
+                day = datetime.fromtimestamp(ts, kst).date().isoformat()
+                daily[day] = value
+        value = daily.get(trading_date)
+        earlier = sorted(day for day in daily if day < trading_date)
+        previous_close = daily[earlier[-1]] if earlier else None
+        if any(not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0
+               for price in (value, previous_close)):
+            return None
+        # 메타데이터만 먼저 갱신되고 일봉이 아직 장중 값인 응답도 제외합니다.
+        current = meta.get("regularMarketPrice")
+        if not isinstance(current, (int, float)) or not math.isfinite(current) or abs(current - value) > 0.005:
+            return None
+        change = value - previous_close
+        return {
+            "name": label, "value": round(value, 2),
+            "previous_close": round(previous_close, 2),
+            "change": round(change, 2),
+            "change_pct": round(change / previous_close * 100, 2),
+            "date": trading_date, "source": "Yahoo Finance daily close",
+        }
+    except (KeyError, IndexError, TypeError, ValueError, OverflowError, OSError) as e:
+        print(f"Error fetching confirmed close for {label}: {e}")
+    return None
+
+
+def fetch_korea_market_closing_indices(trading_date):
+    """두 국내 지수의 종가를 조회하며 미확인 지수는 None으로 반환합니다."""
+    return _run_concurrently({
+        "kospi": lambda: _fetch_korea_index_close("^KS11", "KOSPI", trading_date),
+        "kosdaq": lambda: _fetch_korea_index_close("^KQ11", "KOSDAQ", trading_date),
+    })
+
+
+def fetch_korea_market_close_data(trading_date=None):
     """
     한국장 마감 요약에 필요한 데이터를 한 번에 가져옵니다. (각 항목 병렬 조회 + 60초 TTL 캐시)
     - KOSPI, KOSDAQ (국내 지수)
@@ -612,9 +677,14 @@ def fetch_korea_market_close_data():
         timestamp: "..."
     }
     """
+    now_kst = market_calendar.get_korea_now()
+    trading_date = trading_date or now_kst.strftime("%Y-%m-%d")
+
     def _fetch():
+        korea_indices = fetch_korea_market_closing_indices(trading_date)
+        if not all(korea_indices.get(key) for key in ("kospi", "kosdaq")):
+            return None  # 미확인 종가는 캐시하지 않고 다음 스케줄에서 재조회
         fetched = _run_concurrently({
-            "korea_indices": fetch_korea_market_indices,
             "usd_krw": fetch_usd_krw,
             "fear_greed": fetch_fear_greed_index,
             "vix": fetch_vix,
@@ -622,16 +692,16 @@ def fetch_korea_market_close_data():
         })
 
         return {
-            "korea_indices": fetched.get("korea_indices") or {},
+            "korea_indices": korea_indices,
             "usd_krw": fetched.get("usd_krw"),
             "fear_greed": fetched.get("fear_greed"),
             "vix": fetched.get("vix"),
             "us_indices": fetched.get("us_indices") or {},
-            "date": time.strftime("%Y-%m-%d", time.gmtime(time.time() + 9 * 60 * 60)),
+            "date": trading_date,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() + 9 * 60 * 60))
         }
 
-    return _cached("korea_market_close", _fetch)
+    return _cached(f"korea_market_close:{trading_date}", _fetch)
 
 
 def _fetch_index_high_range(symbol, rng):
@@ -1166,6 +1236,8 @@ def format_korea_market_close_report(data):
     - USD/KRW 환율
     - (참고) 공포탐욕지수, VIX, 미국 주요 지수
     """
+    if not data:
+        return "🇰🇷 당일 한국장 종가가 아직 확인되지 않았습니다. 잠시 후 다시 조회해 주세요."
     lines = []
     lines.append("<b>🇰🇷 한국장 마감 요약</b>")
     lines.append(f"📅 <code>{data.get('date', '')}</code> · ⏱ <code>{data.get('timestamp', '')}</code>")
@@ -1174,7 +1246,7 @@ def format_korea_market_close_report(data):
     # 국내 주요 지수 (KOSPI, KOSDAQ)
     korea_indices = data.get("korea_indices", {})
     if korea_indices:
-        lines.append("\n<b>📈 국내 주요 지수</b>")
+        lines.append("\n<b>📈 국내 주요 지수 (정규장 종가)</b>")
         for key in ["kospi", "kosdaq"]:
             idx = korea_indices.get(key)
             if idx:
@@ -1197,7 +1269,7 @@ def format_korea_market_close_report(data):
 
         emoji = "📈" if change_pct > 0 else "📉" if change_pct < 0 else "➡️"
 
-        lines.append("\n<b>💱 USD/KRW 환율</b>")
+        lines.append("\n<b>💱 USD/KRW 환율 (조회 시점 참고값)</b>")
         lines.append(f"{emoji} <b>{value:,.0f}원</b> ({change_pct:+.2f}% · {change:+,.0f}원)")
 
     # 참고 정보
