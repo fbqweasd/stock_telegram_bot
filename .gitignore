@@ -26,8 +26,9 @@ env/
 # Project Data (SQLite DB)
 data/
 
-# Docker
-.dockerignore
+# Local Python tooling
+.uv-cache/
+.uv-python/
 
 # Logs
 *.log

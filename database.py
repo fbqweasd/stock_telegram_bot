@@ -1,9 +1,16 @@
 import sqlite3
+from contextlib import contextmanager
 from config import DB_PATH
 
+@contextmanager
 def get_connection():
-    """Returns a new SQLite connection (not thread-safe, open/close per operation)."""
-    return sqlite3.connect(DB_PATH)
+    """Commit or roll back each operation, then always close its connection."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 def init_db():
     """Initialize database tables if they don't exist."""
@@ -186,12 +193,13 @@ def remove_subscription(chat_id, ticker):
             "DELETE FROM subscriptions WHERE chat_id = ? AND ticker = ?",
             (chat_id, ticker)
         )
+        removed = cursor.rowcount > 0
         cursor.execute(
             "DELETE FROM last_prices WHERE chat_id = ? AND ticker = ?",
             (chat_id, ticker)
         )
         conn.commit()
-        return cursor.rowcount > 0
+        return removed
 
 def get_user_subscriptions(chat_id):
     """Get all tickers a user is subscribed to."""
@@ -543,19 +551,6 @@ def record_signal_alert(chat_id, ticker, signal_type, alert_date, price=None):
 # 한 종목당 유형(STRONG_BUY/STRONG_SELL)별 하루 최대 1회
 # ================================================================
 
-def get_recommendation_alert_count(chat_id, ticker, alert_date):
-    """
-    특정 사용자가 특정 종목에 대해 해당 날짜에 받은 매수/매도 권장 알림 횟수를 반환합니다.
-    """
-    ticker = ticker.upper().strip()
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT COUNT(*) FROM recommendation_alerts WHERE chat_id = ? AND ticker = ? AND alert_date = ?",
-            (chat_id, ticker, alert_date)
-        )
-        row = cursor.fetchone()
-        return row[0] if row else 0
 
 
 def has_sent_recommendation_alert(chat_id, ticker, alert_date, alert_type):

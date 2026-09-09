@@ -6,12 +6,6 @@ ENV TZ=Asia/Seoul
 # Set working directory
 WORKDIR /app
 
-# Copy dependency manifest
-COPY requirements.txt .
-
-# Run pip install (virtually a no-op due to pure stdlib design)
-RUN pip install --no-cache-dir -r requirements.txt
-
 # Copy application files
 COPY . .
 

@@ -23,7 +23,7 @@ def predict_buy_sell_prices(stock_data):
     upper_bands, middle_bands, lower_bands = calculate_bollinger_bands(closes, period=20)
     rsi_list = calculate_rsi(closes, period=14)
     macd_line, signal_line, histogram = calculate_macd(closes, fast=12, slow=26, signal=9)
-    sma_20 = calculate_sma(closes, period=20)
+    sma_20 = middle_bands
     sma_50 = calculate_sma(closes, period=50)
     atr_list = calculate_atr(highs, lows, closes, period=14)
     support, resistance = find_support_resistance(highs, lows, closes, period=20)
@@ -372,22 +372,3 @@ def predict_buy_sell_prices(stock_data):
         result["timeframe"] = stock_data["timeframe"]
     
     return result
-
-
-if __name__ == "__main__":
-    # Small local test - downtrend (should be SELL)
-    # 130개 데이터로 120일 이평선까지 계산 가능
-    mock_data = {
-        "ticker": "TSLA",
-        "currency": "USD",
-        "current_price": 175.0,
-        "closes": [180 - i*0.5 for i in range(130)],
-        "highs": [182 - i*0.5 for i in range(130)],
-        "lows": [178 - i*0.5 for i in range(130)],
-        "opens": [181 - i*0.5 for i in range(130)],
-        "volumes": [100000 + i*1000 for i in range(130)]
-    }
-    
-    result = predict_buy_sell_prices(mock_data)
-    import pprint
-    pprint.pprint(result)

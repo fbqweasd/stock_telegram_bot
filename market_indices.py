@@ -1147,86 +1147,6 @@ def format_us_market_close_report(data):
     return "\n".join(lines)
 
 
-def format_weekly_report(data):
-    """
-    주간 시장 요약 리포트 형식
-    - 주요 지수 (미국: S&P 500, NASDAQ, DOW / 한국: KOSPI, KOSDAQ) 주간 변동
-    - 관심 종목 주간 변동
-    - 공포탐욕지수, VIX 참고 정보
-
-    data: {
-        indices: { sp500: {...}, nasdaq: {...}, dow: {...}, kospi: {...}, kosdaq: {...} },
-        stocks: [ { ticker, name, currency, value, week_change, week_change_pct }, ... ],
-        fear_greed: {...},
-        vix: {...},
-        week_start: "YYYY-MM-DD",
-        week_end: "YYYY-MM-DD",
-        timestamp: "..."
-    }
-    """
-    lines = []
-    lines.append("<b>📊 주간 시장 요약 리포트</b>")
-    lines.append(f"📅 <code>{data.get('week_start', '')} ~ {data.get('week_end', '')}</code>")
-    lines.append(f"⏱ 생성시간: <code>{data.get('timestamp', '')}</code>")
-    lines.append("━━━━━━━━━━━━━━━━━━━")
-
-    # 주요 지수 주간 변동
-    indices = data.get("indices", {})
-    if indices:
-        lines.append("\n<b>📈 주요 지수 주간 변동</b>")
-        for key in ["sp500", "nasdaq", "dow", "kospi", "kosdaq"]:
-            idx = indices.get(key)
-            if idx:
-                name = idx.get("name", key)
-                value = idx.get("value", 0)
-                week_change = idx.get("week_change", 0)
-                week_change_pct = idx.get("week_change_pct", 0)
-
-                emoji = "🟢" if week_change_pct > 0 else "🔴" if week_change_pct < 0 else "⚪"
-                sign = "+" if week_change_pct > 0 else ""
-
-                lines.append(f"• {emoji} <b>{name}</b>: {value:,.2f} ({sign}{week_change_pct:.2f}% · {sign}{week_change:,.2f})")
-
-    # 관심 종목 주간 변동
-    stocks = data.get("stocks", [])
-    if stocks:
-        lines.append("\n<b>⭐ 관심 종목 주간 변동</b>")
-        for stock in stocks:
-            ticker = stock.get("ticker", "")
-            name = stock.get("name", ticker)
-            currency = stock.get("currency", "USD")
-            value = stock.get("value", 0)
-            week_change = stock.get("week_change", 0)
-            week_change_pct = stock.get("week_change_pct", 0)
-
-            emoji = "🟢" if week_change_pct > 0 else "🔴" if week_change_pct < 0 else "⚪"
-            sign = "+" if week_change_pct > 0 else ""
-
-            lines.append(f"• {emoji} <b>{name}</b> ({ticker}): {value:,.2f} {currency} ({sign}{week_change_pct:.2f}% · {sign}{week_change:,.2f})")
-
-    # 참고 정보
-    lines.append("\n━━━━━━━━━━━━━━━━━━━")
-    lines.append("<b>🌐 참고 정보</b>")
-
-    fg = data.get("fear_greed")
-    if fg and fg.get("value") is not None:
-        value = fg["value"]
-        classification = fg.get("classification", "")
-        week_ago = fg.get("week_ago")
-        week_change_str = ""
-        if week_ago:
-            week_change = value - week_ago
-            week_change_str = f" (1주 전 대비 {week_change:+.1f})"
-        lines.append(f"• 🎭 공포탐욕지수: <b>{value:.1f}</b> ({classification}){week_change_str}")
-
-    vix = data.get("vix")
-    if vix:
-        value = vix["value"]
-        change_pct = vix.get("change_pct", 0)
-        lines.append(f"• 📊 VIX: {value:.2f} ({change_pct:+.2f}%)")
-
-
-    return "\n".join(lines)
 
 
 def format_korea_market_close_report(data):
@@ -1304,17 +1224,3 @@ def format_korea_market_close_report(data):
 
 
     return "\n".join(lines)
-
-
-if __name__ == "__main__":
-    # 테스트
-    print("국내 시장 (KOSPI/KOSDAQ) 데이터 가져오는 중...")
-    data = fetch_korea_market_close_data()
-
-    print("\n" + "=" * 50)
-    print(format_korea_market_close_report(data))
-
-    print("\n" + "=" * 50)
-    print("\n전체 시장 인덱스 가져오는 중...")
-    all_data = fetch_all_indices()
-    print(format_indices_report(all_data))

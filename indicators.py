@@ -32,7 +32,7 @@ def calculate_ema(prices, period=20):
     ema = [None] * len(prices)
     multiplier = 2 / (period + 1)
     
-    # Find first 'period' consecutive non-None values for initial SMA
+    # Seed the EMA from the first 'period' non-None values.
     valid_indices = [i for i, p in enumerate(prices) if p is not None]
     if len(valid_indices) < period:
         return [None] * len(prices)
@@ -41,15 +41,10 @@ def calculate_ema(prices, period=20):
     ema[first_valid_idx] = sum(prices[i] for i in valid_indices[:period]) / period
     
     # Calculate EMA for remaining indices
+    previous = ema[first_valid_idx]
     for idx in valid_indices[period:]:
-        if ema[idx - 1] is not None:
-            ema[idx] = (prices[idx] - ema[idx - 1]) * multiplier + ema[idx - 1]
-        else:
-            # If previous EMA is None, find the last non-None EMA
-            for j in range(idx - 1, -1, -1):
-                if ema[j] is not None:
-                    ema[idx] = (prices[idx] - ema[j]) * multiplier + ema[j]
-                    break
+        previous = (prices[idx] - previous) * multiplier + previous
+        ema[idx] = previous
     
     return ema
 
@@ -174,9 +169,6 @@ def calculate_atr(highs, lows, closes, period=14):
         true_ranges.append(tr)
     
     # First ATR = SMA of first 'period' true ranges
-    if len(true_ranges) < period:
-        return [None] * len(closes)
-    
     atr_value = sum(true_ranges[:period]) / period
     atr[period] = atr_value
     
@@ -349,13 +341,8 @@ def detect_market_regime(closes, sma_20, sma_50, period=20):
     below_pct = below_count / valid_pairs
     
     # Slope of SMA20 (trend strength)
-    valid_indices = [i for i, v in enumerate(sma_20) if v is not None]
-    if len(valid_indices) >= 10:
-        recent_sma20 = [sma_20[i] for i in valid_indices[-10:]]
-        if len(recent_sma20) >= 10:
-            slope = (recent_sma20[-1] - recent_sma20[0]) / recent_sma20[0] * 100
-        else:
-            slope = 0
+    if len(valid_sma20) >= 10:
+        slope = (valid_sma20[-1] - valid_sma20[-10]) / valid_sma20[-10] * 100
     else:
         slope = 0
     

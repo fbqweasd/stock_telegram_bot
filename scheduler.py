@@ -20,7 +20,6 @@ class AlertScheduler:
         self.last_extreme_check_date = None
         self.last_us_market_close_alert_date = None
         self.last_korea_market_close_alert_date = None
-        self.last_weekly_report_date = None
 
     def start(self):
         """Start the background alert scheduler thread."""
@@ -44,7 +43,8 @@ class AlertScheduler:
 
     def _run_loop(self):
         """Main loop for periodic stock indicator checks."""
-        time.sleep(10)  # Initial delay
+        if self._stop_event.wait(10):
+            return
         
         while self.is_running:
             try:
@@ -59,11 +59,7 @@ class AlertScheduler:
             except Exception as e:
                 print(f"Error in Alert Scheduler Loop: {e}")
                 
-            # Sleep in increments for graceful shutdown
-            for _ in range(CHECK_INTERVAL):
-                if not self.is_running:
-                    break
-                time.sleep(1)
+            self._stop_event.wait(CHECK_INTERVAL)
 
     def _korea_close_wait_seconds(self):
         """KST 15:30까지 대기하되 시스템 시각을 최소 1분마다 재확인합니다."""
@@ -106,7 +102,6 @@ class AlertScheduler:
     def _check_weekly_report(self):
         """Send weekly market summary on Monday mornings (KST 08:00-09:59)."""
         now_kst = market_calendar.get_korea_now()
-        today_str = now_kst.strftime("%Y-%m-%d")
         weekday = now_kst.weekday()  # 0=Monday
         hour = now_kst.hour
 
@@ -152,7 +147,6 @@ class AlertScheduler:
                 database.record_weekly_report_send(chat_id, week_start)
                 sent_to_chats.add(chat_id)
 
-            self.last_weekly_report_date = week_start
             print(f"✅ Weekly market report sent successfully. (Week: {week_start})")
 
         except Exception as e:
@@ -545,6 +539,11 @@ class AlertScheduler:
             print("No subscriptions active. Skipping market scan.")
             return
 
+        # Filter before the batch request so closed markets never trigger a quote fetch.
+        tickers = [ticker for ticker in tickers if self._is_ticker_trading_day(ticker)]
+        if not tickers:
+            return
+
         # 토스증권 Open API 설정 시: 전체 종목의 현재가를 배치 요청 1회로 미리 조회 (속도 최적화)
         price_cache = None
         if toss_api.is_configured():
@@ -553,11 +552,6 @@ class AlertScheduler:
 
         for ticker in tickers:
             try:
-                # 휴장일 체크: 해당 종목의 시장이 휴장이면 실시간 조회를 건너뜀
-                if not self._is_ticker_trading_day(ticker):
-                    print(f"📅 {ticker} 시장이 휴장일입니다. 실시간 조회를 건너뜁니다.")
-                    continue
-
                 stock_data = stock_api.fetch_stock_data(ticker, price_cache=price_cache)
                 if not stock_data:
                     print(f"Skipping {ticker} scan - could not retrieve stock data.")
@@ -584,8 +578,6 @@ class AlertScheduler:
         today_str = time.strftime("%Y-%m-%d", time.gmtime(time.time() + kst_offset))
 
         closes = stock_data["closes"]
-        highs = stock_data["highs"]
-        lows = stock_data["lows"]
         current_price = stock_data["current_price"]
         currency = stock_data["currency"]
 
@@ -739,7 +731,7 @@ class AlertScheduler:
         # Process and dispatch each triggered event to users
         stock_name = stock_data.get("name", ticker)
         
-        for event_key, event_info in events.items():
+        for event_info in events.values():
             sig_type = event_info["type"]
             for chat_id in subscribers:
                 # 알람 수신 수준 확인 (일반 기술적 신호: '모든 알람' 수준에서만 수신)

@@ -165,11 +165,3 @@ def format_weekly_report(data):
 
 
     return "\n".join(lines)
-
-
-if __name__ == "__main__":
-    # 테스트
-    print("주간 리포트 데이터 수집 중...")
-    data = fetch_weekly_report_data()
-    print("\n" + "=" * 50)
-    print(format_weekly_report(data))
