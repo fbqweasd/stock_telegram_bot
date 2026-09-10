@@ -1,5 +1,6 @@
 import time
 import threading
+from datetime import timedelta
 from config import CHECK_INTERVAL
 import database
 import stock_api
@@ -152,8 +153,13 @@ class AlertScheduler:
         if hour < 8 or hour > 9:
             return
 
-        # 구독자가 없으면 스킵
-        if not database.get_all_subscriptions():
+        # 리포트는 지난주 월요일을 키로 저장합니다. 조회 전에 수신자를 확인합니다.
+        week_start = (now_kst.date() - timedelta(days=7)).isoformat()
+        recipients = [chat_id for chat_id in sorted({
+            chat_id for chat_id, _ in database.get_all_subscriptions()
+        }) if database.should_send_alert(chat_id, is_market_wide=True)
+            and not database.has_sent_weekly_report(chat_id, week_start)]
+        if not recipients:
             return
 
         try:
@@ -161,32 +167,20 @@ class AlertScheduler:
 
             # 주간 리포트 데이터 수집
             data = weekly_report.fetch_weekly_report_data()
-            week_start = data.get("week_start", "")
+            if data.get("week_start") != week_start:
+                print("Skipping weekly report with an unexpected week_start")
+                return
 
             # 리포트 생성
             report_text = weekly_report.format_weekly_report(data)
 
-            # 모든 구독자에게 전송 (동일한 주에는 1번만)
-            all_subscriptions = database.get_all_subscriptions()
-            sent_to_chats = set()
-
-            for chat_id, ticker in all_subscriptions:
-                if chat_id in sent_to_chats:
-                    continue
-
-                # 이미 이번 주 리포트를 받았으면 스킵
-                if database.has_sent_weekly_report(chat_id, week_start):
-                    continue
-
-                # 알람 수신 수준 확인 (시장 알림)
-                if not database.should_send_alert(chat_id, is_market_wide=True):
-                    continue
-
-                sent = self._send_alert_with_topic(chat_id, report_text)
-                if sent is None:
-                    continue
-                database.record_weekly_report_send(chat_id, week_start)
-                sent_to_chats.add(chat_id)
+            for chat_id in recipients:
+                try:
+                    sent = self._send_alert_with_topic(chat_id, report_text)
+                    if sent is not None:
+                        database.record_weekly_report_send(chat_id, week_start)
+                except Exception as exc:
+                    print(f"Error sending weekly report to {chat_id}: {exc}")
 
             print(f"✅ Weekly market report sent successfully. (Week: {week_start})")
 

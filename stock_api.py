@@ -43,7 +43,9 @@ def fetch_current_prices_batch(tickers):
     토스에서 일부 종목만 반환되면 누락된 종목만 개별 조회로 보완합니다.
     Returns: { ticker: {price, previous_close, currency} }
     """
-    tickers = [t.strip().upper() for t in (tickers or []) if t and t.strip()]
+    tickers = list(dict.fromkeys(
+        t.strip().upper() for t in (tickers or []) if t and t.strip()
+    ))
     if not tickers:
         return {}
 
@@ -240,6 +242,8 @@ def _get_daily_data(ticker):
         #     → closes[-1]이 전일 종가
         # meta.previousClose는 Yahoo Finance에서 부정확한 값을 반환할 수 있어 사용하지 않음
         cleaned["currency"] = currency
+        cleaned["name"] = meta.get("longName") or meta.get("shortName")
+        cleaned["market_state"] = meta.get("marketState", "UNKNOWN")
 
         # 현재 거래 기간 정보 (이번 거래일의 정규장 시작 시간)
         trading_period = meta.get("currentTradingPeriod", {})
@@ -625,8 +629,15 @@ def fetch_stock_data(ticker, price_cache=None):
     if not daily:
         return None
     
-    # 실시간 현재가 (1분봉 + 5분봉) - 프리장/애프터장 포함
-    realtime_price, realtime_prev_close, currency, market_state = _get_realtime_price(ticker)
+    # 이번 조회에서 이미 받은 배치 가격은 Yahoo 폴백에서도 재사용합니다.
+    cached = (price_cache or {}).get(ticker) or {}
+    if cached.get("price") is not None:
+        realtime_price = cached["price"]
+        realtime_prev_close = cached.get("previous_close")
+        currency = cached.get("currency")
+        market_state = cached.get("market_state") or daily.get("market_state")
+    else:
+        realtime_price, realtime_prev_close, currency, market_state = _get_realtime_price(ticker)
     
     # currency가 None이면 일봉 데이터에서 가져옴
     if currency is None:
@@ -643,7 +654,7 @@ def fetch_stock_data(ticker, price_cache=None):
         previous_close = realtime_prev_close
     
     # 종목명 가져오기
-    stock_name = fetch_stock_name(ticker)
+    stock_name = daily.get("name") or fetch_stock_name(ticker)
     
     return {
         "ticker": ticker,
@@ -835,7 +846,7 @@ def fetch_weekly_change(ticker):
     change_pct = (change / week_start_price) * 100
 
     # 종목명 가져오기
-    stock_name = fetch_stock_name(ticker)
+    stock_name = daily.get("name") or fetch_stock_name(ticker)
     currency = daily.get("currency", "USD")
 
     return {
