@@ -48,6 +48,7 @@ cp .env.example .env
 ```ini
 TELEGRAM_BOT_TOKEN=여기에_봇_토큰_입력
 CHECK_INTERVAL=3600
+PRICE_CHECK_INTERVAL=60
 DB_PATH=data/stock_bot.db
 
 # (선택) 토스증권 Open API - 설정 시 데이터 조회가 더 빨라집니다.
@@ -87,7 +88,8 @@ docker run -d \
   --name stock-bot \
   --restart unless-stopped \
   -e TELEGRAM_BOT_TOKEN="your_token_here" \
-  -e CHECK_INTERVAL=3600 \
+  -e CHECK_INTERVAL=3600
+PRICE_CHECK_INTERVAL=60 \
   -v stock-bot-data:/app/data \
   stock-alert-bot
 
@@ -239,3 +241,13 @@ stock_bot/
 ## 📄 라이선스
 
 MIT License
+
+## 가격 변동 알림
+
+- 가격 알림은 기술적 분석과 별도로 기본 60초마다 조회합니다. `PRICE_CHECK_INTERVAL`로 변경할 수 있으며 최소 10초입니다. 조회·전송 시간이 길면 실제 주기는 길어집니다.
+- Yahoo Finance 당일 1분봉 고가·저가(프리·애프터장 포함)를 전일 정규장 종가와 비교하여 ±5%, ±10%, ±20% 도달을 감지합니다. 토스 설정 여부와 관계없이 가격 알림의 분봉 조회는 Yahoo를 사용합니다.
+- 조회 사이에 기준을 넘고 되돌아온 경우도 알립니다. 최근 확인가와 당일 고가·저가 변동률을 따로 표시합니다. 구독/알림 재개 시 당일 앞선 도달 내역도 안내할 수 있습니다.
+- 방향별 가장 높은 새 단계만 전송합니다. 10% 알림 후 5%로 되돌아와도 추가 알림을 보내지 않습니다. 상승과 하락은 각각 안내합니다.
+- 중복 방지는 해당 시장의 현지 거래일 기준이며 재시작 후에도 유지됩니다. 전송 실패는 같은 거래일 다음 조회에서 재시도합니다.
+- 분봉 제공 지연, 누락, 조회/전송 소요 시간에 따라 알림이 늦어질 수 있습니다. 거래소 실시간 체결 스트리밍은 아니며 데이터에 없는 움직임은 감지할 수 없습니다.
+- 적용하려면 봇을 재시작하세요. 데이터베이스 구조 변경은 없습니다. 기존 KST 날짜로 저장된 미국장 알림 이력은 배포 당일 중복될 수 있습니다.

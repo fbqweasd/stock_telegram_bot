@@ -3,9 +3,52 @@ import urllib.parse
 import json
 import ssl
 import time
+import math
 from concurrent.futures import ThreadPoolExecutor
 
 import toss_api
+
+
+def fetch_price_alert_snapshot(ticker):
+    """Fetch today's full minute range, including pre/post, independently of analysis.
+
+    Use actual dated daily closes for the baseline: chartPreviousClose can refer
+    to the beginning of a multi-day chart rather than the previous trading day.
+    Yahoo is used even when Toss is configured, to recover between-poll extremes.
+    """
+    def positive(value):
+        return isinstance(value, (int, float)) and math.isfinite(value) and value > 0
+
+    session_date = toss_api._market_local_date_str(time.time(), ticker)
+    base = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(ticker)}"
+    daily = _make_request(base + "?range=5d&interval=1d&includePrePost=false")
+    intraday = _make_request(base + "?range=1d&interval=1m&includePrePost=true")
+    try:
+        day = daily["chart"]["result"][0]
+        minute = intraday["chart"]["result"][0]
+        daily_closes = day["indicators"]["quote"][0]["close"]
+        prior = [(ts, close) for ts, close in zip(day["timestamp"], daily_closes)
+                 if toss_api._market_local_date_str(ts, ticker) < session_date and positive(close)]
+        if not prior:
+            return None
+        previous_close = max(prior)[1]
+        quote = minute["indicators"]["quote"][0]
+        bars = [(ts, close, high, low) for ts, close, high, low in zip(
+            minute["timestamp"], quote["close"], quote["high"], quote["low"])
+            if toss_api._market_local_date_str(ts, ticker) == session_date
+            and all(positive(v) for v in (close, high, low)) and low <= close <= high]
+        if not bars:
+            return None  # Never relabel yesterday's quote as a new session.
+        latest = max(bars, key=lambda bar: bar[0])
+        meta = minute.get("meta", {})
+        return {"current_price": latest[1], "previous_close": previous_close,
+                "session_high": max(bar[2] for bar in bars),
+                "session_low": min(bar[3] for bar in bars),
+                "session_date": session_date, "quote_timestamp": latest[0],
+                "currency": meta.get("currency", "USD"),
+                "name": meta.get("longName") or meta.get("shortName") or ticker}
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return None
 
 def _make_request(url, retries=3, delay=2):
     """HTTP request helper with retry logic."""

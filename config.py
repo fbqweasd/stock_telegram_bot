@@ -27,6 +27,7 @@ load_dotenv()
 # System Configs
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL", 3600))  # Default: 1 hour
+PRICE_CHECK_INTERVAL = max(10, int(os.environ.get("PRICE_CHECK_INTERVAL", 60)))
 DB_PATH = os.environ.get("DB_PATH", "data/stock_bot.db")
 
 # Ensure data directory exists

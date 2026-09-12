@@ -1,6 +1,8 @@
 import time
 import threading
-from config import CHECK_INTERVAL
+import price_alerts
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from config import CHECK_INTERVAL, PRICE_CHECK_INTERVAL
 import database
 import stock_api
 import toss_api
@@ -16,6 +18,7 @@ class AlertScheduler:
         self.bot = bot_instance
         self.is_running = False
         self.scheduler_thread = None
+        self.price_thread = None
         self.korea_close_thread = None
         self.weekly_events_thread = None
         self._stop_event = threading.Event()
@@ -29,6 +32,9 @@ class AlertScheduler:
             return
         self.is_running = True
         self._stop_event.clear()
+        self.price_thread = threading.Thread(
+            target=self._run_price_loop, daemon=True, name="price-alerts")
+        self.price_thread.start()
         self.scheduler_thread = threading.Thread(target=self._run_loop, daemon=True)
         self.korea_close_thread = threading.Thread(
             target=self._run_korea_close_loop, daemon=True, name="korea-market-close"
@@ -66,6 +72,37 @@ class AlertScheduler:
                 print(f"Error in Alert Scheduler Loop: {e}")
                 
             self._stop_event.wait(CHECK_INTERVAL)
+
+    def _run_price_loop(self):
+        """Price alerts must not wait for slow reports or technical analysis."""
+        while not self._stop_event.is_set():
+            started = time.monotonic()
+            try:
+                self._check_price_alerts()
+            except Exception as exc:
+                print(f"Error in price alert scheduler: {exc}")
+            self._stop_event.wait(max(1, PRICE_CHECK_INTERVAL - (time.monotonic() - started)))
+
+    def _check_price_alerts(self):
+        tickers = [ticker for ticker in database.get_unique_tickers()
+                   if self._is_ticker_trading_day(ticker)
+                   and any(database.should_send_alert(chat, is_important=True)
+                           for chat in database.get_subscribers_for_ticker(ticker))]
+        if not tickers:
+            return
+        with ThreadPoolExecutor(max_workers=min(4, len(tickers))) as pool:
+            futures = {pool.submit(stock_api.fetch_price_alert_snapshot, t): t for t in tickers}
+            for future in as_completed(futures):
+                if self._stop_event.is_set():
+                    return
+                ticker = futures[future]
+                try:
+                    data = future.result()
+                    if data:
+                        self._check_price_change_alerts(ticker, data["current_price"],
+                            data["currency"], database.get_subscribers_for_ticker(ticker), data)
+                except Exception as exc:
+                    print(f"Error fetching price alerts for {ticker}: {exc}")
 
     def _korea_close_wait_seconds(self):
         """KST 15:30까지 대기하되 시스템 시각을 최소 1분마다 재확인합니다."""
@@ -628,7 +665,9 @@ class AlertScheduler:
             return
 
         # --- 1. Price Change % Alerts (works even with minimal data) ---
-        self._check_price_change_alerts(ticker, current_price, currency, subscribers, stock_data)
+        # Price alerts are handled exclusively by the independent price worker.
+        if len(closes) < 21:
+            return
 
         # Basic validation for technical indicators
         # 121개 이상 필요: 120일 이평선 계산 가능
@@ -903,80 +942,7 @@ class AlertScheduler:
             print(f"Error checking recommendation alerts for {ticker}: {e}")
 
     def _check_price_change_alerts(self, ticker, current_price, currency, subscribers, stock_data):
-        """
-        전일 종가 대비 5%, 10%, 20% 변동 시 알림을 전송합니다.
-        하루에 동일한 (임계값, 방향) 조합은 1번만 알림을 전송합니다.
-        예: 5% 상승 알림을 보냈어도, 이후 10% 상승 또는 5% 하락 시에는 새로 알림을 보냅니다.
-        """
-        # 전일 종가 (이미 가져온 stock_data에서 사용 - 중복 API 호출 방지)
-        prev_close = stock_data.get("previous_close")
-        if prev_close is None or prev_close <= 0:
-            return
-
-        # 변동률 계산
-        pct_change = ((current_price - prev_close) / prev_close) * 100
-        abs_pct = abs(pct_change)
-
-        # 오늘 날짜 (KST 기준)
-        kst_offset = 9 * 60 * 60
-        today_str = time.strftime("%Y-%m-%d", time.gmtime(time.time() + kst_offset))
-
-        # 알림 임계값 리스트 (큰 순서대로)
-        thresholds = [20, 10, 5]
-
-        # 현재 변동 방향
-        direction = "up" if pct_change > 0 else "down"
-
-        # 현재 변동률이 넘는 가장 큰 임계값 찾기
-        triggered_threshold = None
-        for t in thresholds:
-            if abs_pct >= t:
-                triggered_threshold = t
-                break
-
-        if triggered_threshold is None:
-            return
-
-        for chat_id in subscribers:
-            # 알람 수신 수준 확인 (개별 종목 중요 알림: 급등락)
-            if not database.should_send_alert(chat_id, is_important=True):
-                continue
-
-            try:
-                # 오늘 이미 보낸 알림 확인
-                sent_alerts = database.get_daily_alerts_for_date(chat_id, ticker, today_str)
-
-                # 이미 보낸 (임계값, 방향) 조합 확인
-                sent_keys = set()
-                for alert in sent_alerts:
-                    sent_keys.add((alert["threshold_pct"], alert["direction"]))
-
-                # 같은 (임계값, 방향) 조합을 이미 오늘 보냈으면 스킵
-                if (triggered_threshold, direction) in sent_keys:
-                    continue
-
-                direction_label = "📈 상승" if pct_change > 0 else "📉 하락"
-                emoji = "🟢" if pct_change > 0 else "🔴"
-                stock_name = stock_data.get("name", ticker)
-
-                alert_text = (
-                    f"<b>{emoji} [{stock_name}] 전일 종가 대비 변동 알림</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━\n"
-                    f"💵 현재가: <b>{current_price:.2f} {currency}</b>\n"
-                    f"📌 전일 종가: {prev_close:.2f} {currency}\n"
-                    f"📊 변동: {direction_label} <b>{abs_pct:.2f}%</b> (기준: {triggered_threshold}%)"
-                )
-
-                sent = self._send_alert_with_topic(chat_id, alert_text)
-                if sent is None:
-                    continue
-                database.record_daily_alert(chat_id, ticker, today_str, triggered_threshold, direction)
-
-                # Update last price and last alert price
-                database.set_last_price(chat_id, ticker, current_price)
-
-            except Exception as e:
-                print(f"Error checking price change for {ticker} (chat {chat_id}): {e}")
+        price_alerts.check_price_changes(self, ticker, current_price, currency, subscribers, stock_data)
 
     def _clear_event_for_all(self, subscribers, ticker, sig_type):
         """
