@@ -4,6 +4,7 @@ import ssl
 import time
 import threading
 import html
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from config import TELEGRAM_BOT_TOKEN
 import database
@@ -37,6 +38,8 @@ class TelegramBot:
         self.base_url = f"https://api.telegram.org/bot{self.token}"
         self.offset = None
         self.is_running = False
+        self.polling_thread = None
+        self._stop_event = threading.Event()
         self.ssl_context = ssl.create_default_context()
         self.ssl_context.check_hostname = False
         self.ssl_context.verify_mode = ssl.CERT_NONE
@@ -100,6 +103,19 @@ class TelegramBot:
         }
         return self._api_call("deleteMessage", payload)
 
+    @contextmanager
+    def _loading_message(self, chat_id, text, **reply_options):
+        """Always remove the progress message, including when a handler fails."""
+        message_id = self.send_message(chat_id, text, **reply_options)
+        try:
+            yield
+        finally:
+            if message_id is not None:
+                try:
+                    self.delete_message(chat_id, message_id)
+                except Exception as exc:
+                    print(f"Error removing loading message: {exc}")
+
     def answer_callback_query(self, callback_query_id, text=None, show_alert=False):
         """
         Acknowledges a callback query (인라인 버튼 클릭 시 로딩 표시 제거 및 알림 표시).
@@ -127,7 +143,7 @@ class TelegramBot:
 
     def get_updates(self):
         """
-        Retrieves new messages via Long Polling.
+        Retrieves new messages via Long Polling; returns None on API failure.
         """
         payload = {"timeout": 20}
         if self.offset is not None:
@@ -136,7 +152,7 @@ class TelegramBot:
         updates = self._api_call("getUpdates", payload)
         if updates and updates.get("ok"):
             return updates.get("result", [])
-        return []
+        return None
 
     def set_my_commands(self):
         """
@@ -159,11 +175,14 @@ class TelegramBot:
         """
         Starts the long polling thread.
         """
+        if self.polling_thread is not None and self.polling_thread.is_alive():
+            return
         if not self.token:
             print("Cannot start Telegram Bot: TELEGRAM_BOT_TOKEN is empty.")
             return
             
         self.is_running = True
+        self._stop_event.clear()
         self.polling_thread = threading.Thread(target=self._poll_loop, daemon=True)
         self.polling_thread.start()
         print("Telegram Bot Polling Thread Started.")
@@ -173,6 +192,7 @@ class TelegramBot:
         Stops the long polling thread.
         """
         self.is_running = False
+        self._stop_event.set()
         print("Stopping Telegram Bot Polling...")
 
     def _poll_loop(self):
@@ -182,17 +202,24 @@ class TelegramBot:
         while self.is_running:
             try:
                 updates = self.get_updates()
+                if updates is None:
+                    self._stop_event.wait(5)
+                    continue
                 for update in updates:
+                    if not self.is_running:
+                        break
                     self.offset = update["update_id"] + 1
-                    
-                    if "message" in update:
-                        self._handle_message(update["message"])
-                    if "callback_query" in update:
-                        self._handle_callback_query(update["callback_query"])
+                    try:
+                        if "message" in update:
+                            self._handle_message(update["message"])
+                        if "callback_query" in update:
+                            self._handle_callback_query(update["callback_query"])
+                    except Exception as e:
+                        print(f"Error handling update {update['update_id']}: {e}")
             except Exception as e:
                 print(f"Error in Polling Loop: {e}")
-                time.sleep(5)  # Rest before retrying to prevent aggressive loops
-            time.sleep(0.5)
+                self._stop_event.wait(5)
+            self._stop_event.wait(0.5)
 
     def _handle_message(self, message):
         """
@@ -460,36 +487,30 @@ class TelegramBot:
             )
             return
             
-        # "가져오는 중..." 메시지를 보내고 message_id를 저장
-        loading_msg_id = self.send_message(chat_id, "🔄 구독 중인 종목들의 현재가를 가져오는 중...",
-                        reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
-        
-        # 한국 시간 (KST = UTC + 9)
-        kst_offset = 9 * 60 * 60
-        now_str = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() + kst_offset))
-        lines = [f"<b>📋 나의 관심 주식 리스트</b>\n⏱ 조회시간: <code>{now_str}</code>\n"]
+        # 성공/실패 여부와 관계없이 조회 중 메시지를 정리합니다.
+        with self._loading_message(chat_id, "🔄 구독 중인 종목들의 현재가를 가져오는 중...",
+                        reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id):
 
-        # 토스증권 Open API 설정 시: 배치 요청 1회로 전체 현재가를 미리 조회 (속도 최적화)
-        # (부분 실패 시 누락 종목만 개별 조회로 보완됨)
-        price_cache = stock_api.fetch_current_prices_batch(subscriptions) if stock_api.is_toss_enabled() else None
+            # 한국 시간 (KST = UTC + 9)
+            kst_offset = 9 * 60 * 60
+            now_str = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() + kst_offset))
+            lines = [f"<b>📋 나의 관심 주식 리스트</b>\n⏱ 조회시간: <code>{now_str}</code>\n"]
 
-        # 종목별 데이터 조회를 병렬로 실행 (종목 수와 무관하게 가장 느린 종목 1개의 시간만 소요)
-        max_workers = min(8, max(1, len(subscriptions)))
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            row_futures = [
-                executor.submit(self._build_list_row, idx, ticker, price_cache)
-                for idx, ticker in enumerate(subscriptions, 1)
-            ]
-            for future in row_futures:
-                lines.append(future.result())
+            # 토스증권 Open API 설정 시: 배치 요청 1회로 전체 현재가를 미리 조회 (속도 최적화)
+            # (부분 실패 시 누락 종목만 개별 조회로 보완됨)
+            price_cache = stock_api.fetch_current_prices_batch(subscriptions) if stock_api.is_toss_enabled() else None
 
-        # 결과 메시지 전송 후 "가져오는 중..." 메시지 삭제
-        self.send_message(chat_id, "\n".join(lines), reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
-        if loading_msg_id:
-            try:
-                self.delete_message(chat_id, loading_msg_id)
-            except Exception:
-                pass
+            # 최대 8개 종목을 동시에 조회하고 구독 순서대로 출력합니다.
+            max_workers = min(8, max(1, len(subscriptions)))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                row_futures = [
+                    executor.submit(self._build_list_row, idx, ticker, price_cache)
+                    for idx, ticker in enumerate(subscriptions, 1)
+                ]
+                for future in row_futures:
+                    lines.append(future.result())
+
+            self.send_message(chat_id, "\n".join(lines), reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
 
     def _build_list_row(self, idx, ticker, price_cache=None):
         """
@@ -506,7 +527,9 @@ class TelegramBot:
             full_data = stock_api.fetch_stock_data(ticker, price_cache)
             if full_data:
                 cached = price_cache.get(ticker) or {}
-                price = cached.get("price") or full_data["current_price"]
+                price = cached.get("price")
+                if price is None:
+                    price = full_data["current_price"]
                 prev_close = cached.get("previous_close")
                 if prev_close is None or prev_close <= 0:
                     prev_close = full_data.get("previous_close")
@@ -577,162 +600,96 @@ class TelegramBot:
             return
             
         ticker = arg.upper().strip()
-        # "예측하고 있습니다..." 메시지를 보내고 message_id를 저장
-        loading_msg_id = self.send_message(chat_id, f"📊 <code>{html.escape(ticker)}</code> 기술적 지표를 분석하여 매매 가격을 예측하고 있습니다...",
-                        reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
-        
-        stock_data = stock_api.fetch_stock_data(ticker)
-        if not stock_data:
-            self.send_message(chat_id, f"❌ <code>{html.escape(ticker)}</code> 데이터를 가져오지 못했습니다. 티커명을 확인하세요.",
-                            reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
-            # 실패 시에도 로딩 메시지 삭제
-            if loading_msg_id:
-                try:
-                    self.delete_message(chat_id, loading_msg_id)
-                except Exception:
-                    pass
-            return
-            
-        analysis = predictor.predict_buy_sell_prices(stock_data)
-        if "error" in analysis:
-            self.send_message(chat_id, f"⚠️ 분석 실패: {html.escape(analysis['error'])}",
-                            reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
-            # 실패 시에도 로딩 메시지 삭제
-            if loading_msg_id:
-                try:
-                    self.delete_message(chat_id, loading_msg_id)
-                except Exception:
-                    pass
-            return
-            
-        # Format prediction response
-        currency = html.escape(str(analysis["currency"]))
-        rec = analysis["recommendation"]
-        ticker_safe = html.escape(str(analysis["ticker"]))
-        stock_name = html.escape(str(stock_data.get("name", analysis["ticker"])))
-        
-        # Color rating decoration
-        emoji = "⚪"
-        if "STRONG BUY" in rec:
-            emoji = "🟢🔥"
-        elif "BUY" in rec:
-            emoji = "🟢"
-        elif "STRONG SELL" in rec:
-            emoji = "🔴🔥"
-        elif "SELL" in rec:
-            emoji = "🔴"
-        else:
-            emoji = "🟡"
-            
-        indicators = analysis["indicators"]
-        
-        # 판단 근거 설명 추가
-        signals = analysis.get("signals", [])
-        score = analysis.get("score", 0)
-        
-        # 점수 해석
-        score_interpretation = ""
-        if score >= 4.0:
-            score_interpretation = "매우 강한 매수 신호 (점수: +{:.1f})".format(score)
-        elif score >= 2.0:
-            score_interpretation = "강한 매수 신호 (점수: +{:.1f})".format(score)
-        elif score >= 0.5:
-            score_interpretation = "약한 매수 신호 (점수: +{:.1f})".format(score)
-        elif score <= -4.0:
-            score_interpretation = "매우 강한 매도 신호 (점수: {:.1f})".format(score)
-        elif score <= -2.0:
-            score_interpretation = "강한 매도 신호 (점수: {:.1f})".format(score)
-        elif score <= -0.5:
-            score_interpretation = "약한 매도 신호 (점수: {:.1f})".format(score)
-        else:
-            score_interpretation = "중립 (점수: {:.1f})".format(score)
-        
-        # 현재가 대비 매수/매도 목표가 차이 계산
-        current_price = analysis['current_price']
-        buy_target = analysis['buy_target']
-        sell_target = analysis['sell_target']
-        buy_discount = ((current_price - buy_target) / current_price * 100) if current_price > 0 else 0
-        sell_premium = ((sell_target - current_price) / current_price * 100) if current_price > 0 else 0
-        
-        report_text = (
-            f"<b>📊 [{stock_name}] ({ticker_safe}) 기술적 분석 & 예측 리포트</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━\n"
-            f"💵 현재가: <b>{current_price:.2f} {currency}</b>\n"
-            f"📢 추천 등급: <b>{emoji} {html.escape(rec)}</b>\n"
-            f"🎯 예측 신뢰도: <b>{analysis['confidence']}%</b>\n"
-            f"📊 종합 점수: <b>{html.escape(score_interpretation)}</b>\n\n"
-            f"🎯 <b>최적의 매수 목표가:</b>\n"
-            f"👉 <code>{buy_target:.2f} {currency}</code> 이하 추천\n"
-            f"<i>(현재가 대비 {buy_discount:.1f}% 하락 시 매수 기회)</i>\n"
-            f"<i>산출 기준: 볼린저 하단(60%) + 지지선(40%)</i>\n\n"
-            f"🎯 <b>최적의 매도 목표가:</b>\n"
-            f"👉 <code>{sell_target:.2f} {currency}</code> 이상 추천\n"
-            f"<i>(현재가 대비 {sell_premium:.1f}% 상승 시 매도 기회)</i>\n"
-            f"<i>산출 기준: 볼린저 상단(60%) + 저항선(40%)</i>\n"
-            f"━━━━━━━━━━━━━━━━━━━\n"
-            f"<b>🔍 판단 근거 (6개 지표 분석)</b>\n"
-        )
-        
-        # 신호 설명 추가 (최대 5개)
-        if signals:
-            for i, signal in enumerate(signals[:5], 1):
-                report_text += f"{i}. {html.escape(signal)}\n"
-        else:
-            report_text += "분석된 신호가 없습니다.\n"
-            
-        # RSI 상태 설명
-        rsi_val = indicators['rsi']
-        rsi_status = ""
-        if rsi_val >= 70:
-            rsi_status = "과매수 ⚠️ (하락 가능성)"
-        elif rsi_val >= 60:
-            rsi_status = "고평가 구간 (주의)"
-        elif rsi_val >= 45:
-            rsi_status = "중립 (안정적)"
-        elif rsi_val >= 30:
-            rsi_status = "저평가 구간 (관심)"
-        else:
-            rsi_status = "과매도 ⚡ (반등 가능성)"
-        
-        # MACD 상태 설명
-        macd_val = indicators['macd']
-        macd_hist = indicators['macd_histogram']
-        macd_status = ""
-        if macd_hist > 0:
-            macd_status = "상승 추세 (매수 우위)"
-        elif macd_hist < 0:
-            macd_status = "하락 추세 (매도 우위)"
-        else:
-            macd_status = "중립"
-        
-        # SMA 상태 설명
-        sma20 = indicators['sma_20']
-        sma50 = indicators['sma_50']
-        sma_status = ""
-        if sma20 > sma50:
-            sma_status = "골든크로스 (상승 추세)"
-        else:
-            sma_status = "데드크로스 (하락 추세)"
-        
-        # 볼린저 밴드 위치 설명
-        bb_lower = indicators['bb_lower']
-        bb_upper = indicators['bb_upper']
-        bb_position = (current_price - bb_lower) / (bb_upper - bb_lower) * 100 if (bb_upper != bb_lower) else 50
-        bb_status = ""
-        if bb_position <= 20:
-            bb_status = "하단 부근 (매수 신호)"
-        elif bb_position >= 80:
-            bb_status = "상단 부근 (매도 신호)"
-        else:
-            bb_status = "중앙 (안정적)"
+        # 성공/실패 여부와 관계없이 분석 중 메시지를 정리합니다.
+        with self._loading_message(chat_id, f"📊 <code>{html.escape(ticker)}</code> 기술적 지표를 분석하여 매매 가격을 예측하고 있습니다...",
+                        reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id):
 
-        # 결과 전송 후 로딩 메시지 삭제
-        self.send_message(chat_id, report_text, reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
-        if loading_msg_id:
-            try:
-                self.delete_message(chat_id, loading_msg_id)
-            except Exception:
-                pass
+            stock_data = stock_api.fetch_stock_data(ticker)
+            if not stock_data:
+                self.send_message(chat_id, f"❌ <code>{html.escape(ticker)}</code> 데이터를 가져오지 못했습니다. 티커명을 확인하세요.",
+                                reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
+                return
+
+            analysis = predictor.predict_buy_sell_prices(stock_data)
+            if "error" in analysis:
+                self.send_message(chat_id, f"⚠️ 분석 실패: {html.escape(analysis['error'])}",
+                                reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
+                return
+
+            # Format prediction response
+            currency = html.escape(str(analysis["currency"]))
+            rec = analysis["recommendation"]
+            ticker_safe = html.escape(str(analysis["ticker"]))
+            stock_name = html.escape(str(stock_data.get("name", analysis["ticker"])))
+
+            # Color rating decoration
+            emoji = "⚪"
+            if "STRONG BUY" in rec:
+                emoji = "🟢🔥"
+            elif "BUY" in rec:
+                emoji = "🟢"
+            elif "STRONG SELL" in rec:
+                emoji = "🔴🔥"
+            elif "SELL" in rec:
+                emoji = "🔴"
+            else:
+                emoji = "🟡"
+
+            # 판단 근거 설명 추가
+            signals = analysis.get("signals", [])
+            score = analysis.get("score", 0)
+
+            # 점수 해석
+            score_interpretation = ""
+            if score >= 4.0:
+                score_interpretation = "매우 강한 매수 신호 (점수: +{:.1f})".format(score)
+            elif score >= 2.0:
+                score_interpretation = "강한 매수 신호 (점수: +{:.1f})".format(score)
+            elif score >= 0.5:
+                score_interpretation = "약한 매수 신호 (점수: +{:.1f})".format(score)
+            elif score <= -4.0:
+                score_interpretation = "매우 강한 매도 신호 (점수: {:.1f})".format(score)
+            elif score <= -2.0:
+                score_interpretation = "강한 매도 신호 (점수: {:.1f})".format(score)
+            elif score <= -0.5:
+                score_interpretation = "약한 매도 신호 (점수: {:.1f})".format(score)
+            else:
+                score_interpretation = "중립 (점수: {:.1f})".format(score)
+
+            # 현재가 대비 매수/매도 목표가 차이 계산
+            current_price = analysis['current_price']
+            buy_target = analysis['buy_target']
+            sell_target = analysis['sell_target']
+            buy_discount = ((current_price - buy_target) / current_price * 100) if current_price > 0 else 0
+            sell_premium = ((sell_target - current_price) / current_price * 100) if current_price > 0 else 0
+
+            report_text = (
+                f"<b>📊 [{stock_name}] ({ticker_safe}) 기술적 분석 & 예측 리포트</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"💵 현재가: <b>{current_price:.2f} {currency}</b>\n"
+                f"📢 추천 등급: <b>{emoji} {html.escape(rec)}</b>\n"
+                f"🎯 예측 신뢰도: <b>{analysis['confidence']}%</b>\n"
+                f"📊 종합 점수: <b>{html.escape(score_interpretation)}</b>\n\n"
+                f"🎯 <b>최적의 매수 목표가:</b>\n"
+                f"👉 <code>{buy_target:.2f} {currency}</code> 이하 추천\n"
+                f"<i>(현재가 대비 {buy_discount:.1f}% 하락 시 매수 기회)</i>\n"
+                f"<i>산출 기준: 볼린저 하단(60%) + 지지선(40%)</i>\n\n"
+                f"🎯 <b>최적의 매도 목표가:</b>\n"
+                f"👉 <code>{sell_target:.2f} {currency}</code> 이상 추천\n"
+                f"<i>(현재가 대비 {sell_premium:.1f}% 상승 시 매도 기회)</i>\n"
+                f"<i>산출 기준: 볼린저 상단(60%) + 저항선(40%)</i>\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>🔍 판단 근거 (6개 지표 분석)</b>\n"
+            )
+
+            # 신호 설명 추가 (최대 5개)
+            if signals:
+                for i, signal in enumerate(signals[:5], 1):
+                    report_text += f"{i}. {html.escape(signal)}\n"
+            else:
+                report_text += "분석된 신호가 없습니다.\n"
+
+            self.send_message(chat_id, report_text, reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
 
     def _handle_predict_short(self, chat_id, arg, reply_to_message_id=None, message_thread_id=None):
         """
@@ -745,44 +702,29 @@ class TelegramBot:
             return
             
         ticker = arg.upper().strip()
-        loading_msg_id = self.send_message(chat_id, f"📊 <code>{html.escape(ticker)}</code> 5분봉 기준 단기 기술적 분석을 수행하고 있습니다...",
-                        reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
-        
-        # 5분봉 데이터 가져오기
-        stock_data = stock_api.fetch_stock_data_intraday(ticker, interval="5m", range_str="5d")
-        if not stock_data:
-            # fallback: 15분봉 시도
-            stock_data = stock_api.fetch_stock_data_intraday(ticker, interval="15m", range_str="5d")
-        
-        if not stock_data:
-            self.send_message(chat_id, f"❌ <code>{html.escape(ticker)}</code> 단기 차트 데이터를 가져오지 못했습니다. 티커명을 확인하세요.",
-                            reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
-            if loading_msg_id:
-                try:
-                    self.delete_message(chat_id, loading_msg_id)
-                except Exception:
-                    pass
-            return
-            
-        analysis = predictor.predict_buy_sell_prices(stock_data)
-        if "error" in analysis:
-            self.send_message(chat_id, f"⚠️ 단기 분석 실패: {html.escape(analysis['error'])}",
-                            reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
-            if loading_msg_id:
-                try:
-                    self.delete_message(chat_id, loading_msg_id)
-                except Exception:
-                    pass
-            return
-            
-        # 리포트 포맷팅 (공통 메서드 활용)
-        report_text = self._format_prediction_report(analysis, uses_short_term=True)
-        self.send_message(chat_id, report_text, reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
-        if loading_msg_id:
-            try:
-                self.delete_message(chat_id, loading_msg_id)
-            except Exception:
-                pass
+        with self._loading_message(chat_id, f"📊 <code>{html.escape(ticker)}</code> 5분봉 기준 단기 기술적 분석을 수행하고 있습니다...",
+                        reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id):
+
+            # 5분봉 데이터 가져오기
+            stock_data = stock_api.fetch_stock_data_intraday(ticker, interval="5m", range_str="5d")
+            if not stock_data:
+                # fallback: 15분봉 시도
+                stock_data = stock_api.fetch_stock_data_intraday(ticker, interval="15m", range_str="5d")
+
+            if not stock_data:
+                self.send_message(chat_id, f"❌ <code>{html.escape(ticker)}</code> 단기 차트 데이터를 가져오지 못했습니다. 티커명을 확인하세요.",
+                                reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
+                return
+
+            analysis = predictor.predict_buy_sell_prices(stock_data)
+            if "error" in analysis:
+                self.send_message(chat_id, f"⚠️ 단기 분석 실패: {html.escape(analysis['error'])}",
+                                reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
+                return
+
+            # 리포트 포맷팅 (공통 메서드 활용)
+            report_text = self._format_prediction_report(analysis, uses_short_term=True)
+            self.send_message(chat_id, report_text, reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
 
     def _handle_predict_weekly(self, chat_id, arg, reply_to_message_id=None, message_thread_id=None):
         """
@@ -795,40 +737,25 @@ class TelegramBot:
             return
             
         ticker = arg.upper().strip()
-        loading_msg_id = self.send_message(chat_id, f"📊 <code>{html.escape(ticker)}</code> 주봉 기준 장기 기술적 분석을 수행하고 있습니다...",
-                        reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
-        
-        # 주봉 데이터 가져오기
-        stock_data = stock_api.fetch_stock_data_weekly(ticker)
-        if not stock_data:
-            self.send_message(chat_id, f"❌ <code>{html.escape(ticker)}</code> 주봉 데이터를 가져오지 못했습니다. 티커명을 확인하세요.",
-                            reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
-            if loading_msg_id:
-                try:
-                    self.delete_message(chat_id, loading_msg_id)
-                except Exception:
-                    pass
-            return
-            
-        analysis = predictor.predict_buy_sell_prices(stock_data)
-        if "error" in analysis:
-            self.send_message(chat_id, f"⚠️ 장기 분석 실패: {html.escape(analysis['error'])}",
-                            reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
-            if loading_msg_id:
-                try:
-                    self.delete_message(chat_id, loading_msg_id)
-                except Exception:
-                    pass
-            return
-            
-        # 리포트 포맷팅 (공통 메서드 활용)
-        report_text = self._format_prediction_report(analysis, uses_short_term=False)
-        self.send_message(chat_id, report_text, reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
-        if loading_msg_id:
-            try:
-                self.delete_message(chat_id, loading_msg_id)
-            except Exception:
-                pass
+        with self._loading_message(chat_id, f"📊 <code>{html.escape(ticker)}</code> 주봉 기준 장기 기술적 분석을 수행하고 있습니다...",
+                        reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id):
+
+            # 주봉 데이터 가져오기
+            stock_data = stock_api.fetch_stock_data_weekly(ticker)
+            if not stock_data:
+                self.send_message(chat_id, f"❌ <code>{html.escape(ticker)}</code> 주봉 데이터를 가져오지 못했습니다. 티커명을 확인하세요.",
+                                reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
+                return
+
+            analysis = predictor.predict_buy_sell_prices(stock_data)
+            if "error" in analysis:
+                self.send_message(chat_id, f"⚠️ 장기 분석 실패: {html.escape(analysis['error'])}",
+                                reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
+                return
+
+            # 리포트 포맷팅 (공통 메서드 활용)
+            report_text = self._format_prediction_report(analysis, uses_short_term=False)
+            self.send_message(chat_id, report_text, reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
 
     def _format_prediction_report(self, analysis, uses_short_term=False):
         """
