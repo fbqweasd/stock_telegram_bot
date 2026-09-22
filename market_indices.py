@@ -599,7 +599,69 @@ def fetch_korea_market_indices():
     return result
 
 
+def _fetch_naver_korea_index_close(code, trading_date):
+    """지연 없는 국내 지수에서 당일 장 종료가 확인된 값만 사용합니다."""
+    url = f"https://polling.finance.naver.com/api/realtime/domestic/index/{code}"
+    try:
+        response = _make_request(url, headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://m.stock.naver.com/",
+            "Cache-Control": "no-cache",
+        }, retries=1, timeout=3)
+        if not response:
+            return None
+        items = json.loads(response).get("datas", [])
+        item = next((item for item in items if item.get("itemCode") == code), None)
+        if not item or item.get("marketStatus") != "CLOSE":
+            return None
+
+        kst = timezone(timedelta(hours=9))
+        quoted_at = datetime.fromisoformat(item["localTradedAt"])
+        if quoted_at.tzinfo is None:
+            return None
+        quoted_at = quoted_at.astimezone(kst)
+        if quoted_at.date().isoformat() != trading_date:
+            return None
+        # 수능일 등 연장된 정규장은 제공처의 종료 시각까지 기다립니다.
+        session_end = datetime.strptime(item["stockExchangeType"]["endTime"], "%H%M")
+        close_at = datetime.strptime(trading_date, "%Y-%m-%d").replace(
+            hour=15, minute=30, tzinfo=kst
+        )
+        close_at = max(close_at, close_at.replace(hour=session_end.hour, minute=session_end.minute))
+        if quoted_at < close_at:
+            return None
+
+        value = float(str(item["closePrice"]).replace(",", ""))
+        change = float(str(item["compareToPreviousClosePrice"]).replace(",", ""))
+        direction = str(item["compareToPreviousPrice"]["code"])
+        if direction in ("1", "2"):
+            change = abs(change)
+        elif direction in ("4", "5"):
+            change = -abs(change)
+        elif direction != "3" or change != 0:
+            return None
+        previous_close = value - change
+        if not all(math.isfinite(price) and price > 0 for price in (value, previous_close)):
+            return None
+        return {
+            "name": code, "value": round(value, 2),
+            "previous_close": round(previous_close, 2),
+            "change": round(change, 2),
+            "change_pct": round(change / previous_close * 100, 2),
+            "date": trading_date, "source": "Naver Finance closing index",
+        }
+    except (KeyError, AttributeError, TypeError, ValueError, OverflowError) as e:
+        print(f"Error fetching Naver confirmed close for {code}: {e}")
+    return None
+
+
 def _fetch_korea_index_close(symbol, label, trading_date):
+    """국내 실시간 종가를 우선 사용하고, 실패하면 Yahoo 확정 일봉으로 폴백합니다."""
+    return (_fetch_naver_korea_index_close(label, trading_date)
+            or _fetch_yahoo_korea_index_close(symbol, label, trading_date))
+
+
+def _fetch_yahoo_korea_index_close(symbol, label, trading_date):
     """당일 정규장 종료까지 반영된 일봉만 종가로 사용합니다."""
     kst = timezone(timedelta(hours=9))
     close_at = datetime.strptime(trading_date, "%Y-%m-%d").replace(
@@ -610,7 +672,8 @@ def _fetch_korea_index_close(symbol, label, trading_date):
         f"{urllib.parse.quote(symbol)}?range=10d&interval=1d&includePrePost=false"
     )
     try:
-        response = _make_request(url)
+        # 지연 시세/장애 때문에 다음 국내 종가 조회까지 오래 기다리지 않습니다.
+        response = _make_request(url, retries=1, timeout=3)
         if not response:
             return None
         result = json.loads(response)["chart"]["result"][0]
