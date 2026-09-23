@@ -5,8 +5,74 @@ import ssl
 import time
 import math
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 
+import market_calendar
 import toss_api
+
+
+_nasdaq_close_cache = {}
+
+
+def _previous_us_trading_date(session_date):
+    """Return the trading day preceding the current US market date."""
+    day = datetime.fromisoformat(session_date) - timedelta(days=1)
+    for _ in range(14):
+        if market_calendar.is_us_trading_day(day):
+            return day.strftime("%Y-%m-%d")
+        day -= timedelta(days=1)
+    return None
+
+
+def _get_nasdaq_previous_close(ticker, instrument_type, trade_date):
+    """Read an exact dated US stock/ETF close from Nasdaq."""
+    if not trade_date:
+        return None
+    assetclasses = {"EQUITY": ("stocks",), "ETF": ("etf",)}.get(
+        instrument_type, ("stocks", "etf")
+    )
+    cache_key = (ticker, trade_date)
+    if cache_key in _nasdaq_close_cache:
+        return _nasdaq_close_cache[cache_key]
+
+    next_date = (datetime.fromisoformat(trade_date) + timedelta(days=1)).strftime("%Y-%m-%d")
+    for assetclass in assetclasses:
+        params = urllib.parse.urlencode({
+            "assetclass": assetclass, "fromdate": trade_date,
+            "todate": next_date, "limit": 5,
+        })
+        url = f"https://api.nasdaq.com/api/quote/{urllib.parse.quote(ticker)}/historical?{params}"
+        try:
+            data = _make_request(url, retries=1)
+            if data.get("status", {}).get("rCode") != 200:
+                continue
+            rows = data.get("data", {}).get("tradesTable", {}).get("rows", [])
+            for row in rows:
+                row_date = datetime.strptime(row["date"], "%m/%d/%Y").strftime("%Y-%m-%d")
+                if row_date == trade_date:
+                    close = float(str(row["close"]).replace("$", "").replace(",", ""))
+                    if math.isfinite(close) and close > 0:
+                        _nasdaq_close_cache[cache_key] = close
+                        return close
+        except (AttributeError, KeyError, TypeError, ValueError, OSError):
+            continue
+    return None
+
+
+def _get_us_previous_close(ticker, instrument_type, session_date, daily_bars):
+    """Use Nasdaq, or another provider's close only for the same prior date."""
+    trade_date = _previous_us_trading_date(session_date)
+    if not trade_date:
+        return None
+    close = _get_nasdaq_previous_close(ticker, instrument_type, trade_date)
+    if close is not None:
+        return close
+    for ts, fallback_close in reversed(list(daily_bars)):
+        if (toss_api._market_local_date_str(ts, ticker) == trade_date
+                and isinstance(fallback_close, (int, float))
+                and math.isfinite(fallback_close) and fallback_close > 0):
+            return fallback_close
+    return None
 
 
 def fetch_price_alert_snapshot(ticker):
@@ -27,11 +93,16 @@ def fetch_price_alert_snapshot(ticker):
         day = daily["chart"]["result"][0]
         minute = intraday["chart"]["result"][0]
         daily_closes = day["indicators"]["quote"][0]["close"]
-        prior = [(ts, close) for ts, close in zip(day["timestamp"], daily_closes)
-                 if toss_api._market_local_date_str(ts, ticker) < session_date and positive(close)]
-        if not prior:
+        daily_bars = list(zip(day["timestamp"], daily_closes))
+        instrument_type = day.get("meta", {}).get("instrumentType")
+        if not toss_api._is_korean_ticker(ticker) and instrument_type in ("EQUITY", "ETF"):
+            previous_close = _get_us_previous_close(ticker, instrument_type, session_date, daily_bars)
+        else:
+            prior = [(ts, close) for ts, close in daily_bars
+                     if toss_api._market_local_date_str(ts, ticker) < session_date and positive(close)]
+            previous_close = max(prior)[1] if prior else None
+        if previous_close is None:
             return None
-        previous_close = max(prior)[1]
         quote = minute["indicators"]["quote"][0]
         bars = [(ts, close, high, low) for ts, close, high, low in zip(
             minute["timestamp"], quote["close"], quote["high"], quote["low"])
@@ -279,9 +350,17 @@ def _get_daily_data(ticker):
         cleaned["name"] = meta.get("longName") or meta.get("shortName")
         cleaned["market_state"] = meta.get("marketState", "UNKNOWN")
 
-        prev_close = toss_api._compute_previous_close(cleaned, ticker)
+        instrument_type = meta.get("instrumentType")
+        if not toss_api._is_korean_ticker(ticker) and instrument_type in ("EQUITY", "ETF"):
+            session_date = toss_api._market_local_date_str(time.time(), ticker)
+            prev_close = _get_us_previous_close(
+                ticker, instrument_type, session_date,
+                zip(cleaned["timestamps"], cleaned["closes"]),
+            )
+        else:
+            prev_close = toss_api._compute_previous_close(cleaned, ticker)
 
-        if prev_close is None or prev_close <= 0:
+        if (prev_close is None or prev_close <= 0) and instrument_type not in ("EQUITY", "ETF"):
             # 마지막 캔들 종가가 없으면 meta 값 사용 (최종 fallback)
             prev_close = (meta.get("previousClose") or
                          meta.get("regularMarketPreviousClose") or
@@ -602,13 +681,19 @@ def _fetch_stock_data_toss(ticker, price_cache=None):
             current_price = daily["closes"][-1]
 
         currency = (price_info or {}).get("currency") or daily.get("currency") or "USD"
+        previous_close = daily.get("previous_close")
+        if not toss_api._is_korean_ticker(ticker):
+            session_date = toss_api._market_local_date_str(time.time(), ticker)
+            previous_close = _get_us_previous_close(
+                ticker, None, session_date, zip(daily["timestamps"], daily["closes"])
+            )
 
         return {
             "ticker": ticker,
             "name": fetch_stock_name(ticker),
             "currency": currency,
             "current_price": current_price,
-            "previous_close": daily.get("previous_close"),
+            "previous_close": previous_close,
             "market_state": daily.get("market_state") or "UNKNOWN",
             "timestamps": daily["timestamps"],
             "closes": daily["closes"],
@@ -883,6 +968,12 @@ def _fetch_current_price_only_toss(ticker, price_cache=None):
     try:
         daily = toss_api.build_daily_data(ticker, count=260)
         daily_prev_close = daily.get("previous_close") if daily else None
+        if not toss_api._is_korean_ticker(ticker):
+            session_date = toss_api._market_local_date_str(time.time(), ticker)
+            daily_prev_close = _get_us_previous_close(
+                ticker, None, session_date,
+                zip(daily["timestamps"], daily["closes"]) if daily else [],
+            )
 
         toss_symbol = toss_api.to_toss_symbol(ticker)
         price_info = None

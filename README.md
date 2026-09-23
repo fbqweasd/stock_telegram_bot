@@ -147,7 +147,7 @@ volumes:
 | 항목 | 내용 |
 |------|------|
 | **언어** | Python 3.11+ (표준 라이브러리만 사용) |
-| **API** | Telegram Bot API (urllib), Yahoo Finance (urllib), 토스증권 Open API (선택, 더 빠른 시세 조회), Alternative.me (공포탐욕지수) |
+| **API** | Telegram Bot API (urllib), Yahoo Finance (현재가·일봉), Nasdaq 과거 시세 (미국 전일 종가), 토스증권 Open API (선택), Alternative.me (공포탐욕지수) |
 | **데이터베이스** | SQLite3 (내장) |
 | **지표 계산** | SMA, 볼린저 밴드, RSI (Wilder Smoothing), 지지/저항 |
 | **예측 모델** | 규칙 기반 휴리스틱 (Rule-based) |
@@ -166,7 +166,7 @@ stock_bot/
 ├── market_indices.py  # 시장 인덱스 데이터 수집 (공포탐욕지수, VIX, 지수, 환율, 국채, KOSPI/KOSDAQ)
 ├── predictor.py       # 매수/매도 가격 예측
 ├── scheduler.py       # 백그라운드 알림 스케줄러
-├── stock_api.py       # Yahoo Finance API 연동 (+ 토스증권 Open API 우선 사용/폴백)
+├── stock_api.py       # 현재가·일봉 및 미국 전일 종가 조회 (Yahoo/Nasdaq/토스증권)
 ├── toss_api.py        # 토스증권 Open API 연동 (선택, OAuth2 토큰/시세/캔들/종목정보)
 ├── telegram_bot.py    # 텔레그램 봇 (명령어 처리/메시지 전송)
 ├── Dockerfile         # 도커 이미지 빌드
@@ -246,7 +246,7 @@ MIT License
 ## 가격 변동 알림
 
 - 가격 알림은 기술적 분석과 별도로 기본 60초마다 조회합니다. `PRICE_CHECK_INTERVAL`로 변경할 수 있으며 최소 10초입니다. 조회·전송 시간이 길면 실제 주기는 길어집니다.
-- Yahoo Finance 당일 1분봉 고가·저가(프리·애프터장 포함)를 전일 정규장 종가와 비교하여 ±5%, ±10%, ±20% 도달을 감지합니다. 토스 설정 여부와 관계없이 가격 알림의 분봉 조회는 Yahoo를 사용합니다.
+- Yahoo Finance 당일 1분봉 고가·저가(프리·애프터장 포함)를 전일 정규장 종가와 비교하여 ±5%, ±10%, ±20% 도달을 감지합니다. 미국 주식·ETF의 전일 종가는 Nasdaq에서 해당 거래일의 확정 값을 조회하고, 실패 시 Yahoo에 같은 날짜의 유효한 종가가 있을 때만 사용합니다. 토스 설정 여부와 관계없이 가격 알림의 분봉 조회는 Yahoo를 사용합니다.
 - 조회 사이에 기준을 넘고 되돌아온 경우도 알립니다. 최근 확인가와 당일 고가·저가 변동률을 따로 표시합니다. 구독/알림 재개 시 당일 앞선 도달 내역도 안내할 수 있습니다.
 - 방향별 가장 높은 새 단계만 전송합니다. 10% 알림 후 5%로 되돌아와도 추가 알림을 보내지 않습니다. 상승과 하락은 각각 안내합니다.
 - 중복 방지는 해당 시장의 현지 거래일 기준이며 재시작 후에도 유지됩니다. 전송 실패는 같은 거래일 다음 조회에서 재시도합니다.
