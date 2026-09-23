@@ -273,42 +273,13 @@ def _get_daily_data(ticker):
         if len(cleaned["closes"]) < 20:
             return None
         
-        # 전일 종가 계산
-        # includePrePost=false로 요청했지만, 장중(특히 한국 주식)에는 오늘 캔들도 포함될 수 있음
-        # currentTradingPeriod.regular.start를 사용하여 마지막 캔들이 이번 거래일(오늘)의
-        # 캔들인지 판별합니다. 이는 미국/한국 시장의 프리/본/애프터장 상황에 관계없이 정확합니다.
-        #
-        # 판별 로직:
-        #   - 마지막 캔들 타임스탬프 >= regular.start → 오늘 거래일 캔들 포함됨
-        #     → closes[-2]가 전일 종가
-        #   - 마지막 캔들 타임스탬프 < regular.start → 오늘 거래일 캔들 없음 (장 전/후)
-        #     → closes[-1]이 전일 종가
-        # meta.previousClose는 Yahoo Finance에서 부정확한 값을 반환할 수 있어 사용하지 않음
+        # 일봉의 거래일을 시장 현지 날짜로 판별합니다. currentTradingPeriod.regular.start는
+        # 장 마감 후 다음 세션으로 넘어갈 수 있어 오늘 일봉과 비교할 기준으로 부적합합니다.
         cleaned["currency"] = currency
         cleaned["name"] = meta.get("longName") or meta.get("shortName")
         cleaned["market_state"] = meta.get("marketState", "UNKNOWN")
 
-        # 현재 거래 기간 정보 (이번 거래일의 정규장 시작 시간)
-        trading_period = meta.get("currentTradingPeriod", {})
-        regular_period = trading_period.get("regular", {})
-        regular_start = regular_period.get("start")
-
-        prev_close = None
-        if cleaned["timestamps"]:
-            last_ts = cleaned["timestamps"][-1]
-            
-            if regular_start is not None and last_ts >= regular_start:
-                # 마지막 캔들이 오늘 거래일 캔들 → 그 이전 캔들이 전일 종가
-                # (includePrePost=false이므로 하루에 하나씩만 존재)
-                if len(cleaned["closes"]) >= 2:
-                    prev_close = cleaned["closes"][-2]
-            else:
-                # 마지막 캔들이 이전 거래일 캔들 → 마지막 캔들 종가가 전일 종가
-                prev_close = cleaned["closes"][-1]
-
-        if prev_close is None or prev_close <= 0:
-            # 전일 데이터가 없으면 마지막 종가 사용 (fallback)
-            prev_close = cleaned["closes"][-1]
+        prev_close = toss_api._compute_previous_close(cleaned, ticker)
 
         if prev_close is None or prev_close <= 0:
             # 마지막 캔들 종가가 없으면 meta 값 사용 (최종 fallback)
@@ -691,7 +662,7 @@ def fetch_stock_data(ticker, price_cache=None):
     if current_price is None:
         current_price = daily["closes"][-1]
     
-    # 전일 종가: _get_daily_data에서 이미 closes[-1]로 정확한 값을 제공
+    # 전일 종가: _get_daily_data에서 시장 현지 날짜 기준으로 계산
     previous_close = daily.get("previous_close")
     if previous_close is None:
         previous_close = realtime_prev_close
