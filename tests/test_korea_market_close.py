@@ -40,9 +40,20 @@ def yahoo_chart():
     }
 
 
+def naver_daily_closes(value="2,550.00", previous_close="2,500.00"):
+    return [
+        {"localTradedAt": TRADING_DATE, "closePrice": value},
+        {"localTradedAt": "2026-09-21", "closePrice": previous_close},
+    ]
+
+
 class NaverCloseTests(unittest.TestCase):
-    def fetch(self, item):
-        with patch("market_indices._make_request", return_value=json.dumps({"datas": [item]})):
+    def fetch(self, item, daily=None):
+        if daily is None:
+            daily = naver_daily_closes()
+        with patch("market_indices._make_request", side_effect=[
+            json.dumps({"datas": [item]}), json.dumps(daily),
+        ]):
             return market_indices._fetch_naver_korea_index_close("KOSPI", TRADING_DATE)
 
     def test_confirmed_close_at_1530_without_yahoo_delay(self):
@@ -58,11 +69,13 @@ class NaverCloseTests(unittest.TestCase):
             with self.subTest(amount=amount):
                 quote = self.fetch(naver_item(
                     closePrice="2,450.00", compareToPreviousClosePrice=amount,
-                    compareToPreviousPrice={"code": "5"}))
+                    compareToPreviousPrice={"code": "5"}),
+                    naver_daily_closes("2,450.00"))
                 self.assertEqual(quote["previous_close"], 2500.0)
                 self.assertEqual(quote["change_pct"], -2.0)
         quote = self.fetch(naver_item(
-            compareToPreviousClosePrice="0", compareToPreviousPrice={"code": "3"}))
+            compareToPreviousClosePrice="0", compareToPreviousPrice={"code": "3"}),
+            naver_daily_closes(previous_close="2,550.00"))
         self.assertEqual(quote["change_pct"], 0)
         self.assertEqual(quote["previous_close"], 2550.0)
 
@@ -108,15 +121,45 @@ class NaverCloseTests(unittest.TestCase):
             with self.subTest(response=response), patch("market_indices._make_request", return_value=response):
                 self.assertIsNone(market_indices._fetch_naver_korea_index_close("KOSPI", TRADING_DATE))
 
+    def test_rejects_close_until_daily_price_and_previous_day_agree(self):
+        cases = [
+            naver_daily_closes(value="2,549.00"),
+            naver_daily_closes(previous_close="2,499.00"),
+            naver_daily_closes(value="NaN"),
+            naver_daily_closes(previous_close="0"),
+            naver_daily_closes()[:1],
+            naver_daily_closes()[1:],
+            [{"localTradedAt": "2026-09-18", "closePrice": "2,500.00"},
+             naver_daily_closes()[0]],
+            [], {}, {"error": "unavailable"},
+        ]
+        for daily in cases:
+            with self.subTest(daily=daily):
+                self.assertIsNone(self.fetch(naver_item(), daily))
+
+    def test_daily_prices_are_selected_by_date_in_any_order(self):
+        daily = list(reversed(naver_daily_closes()))
+        daily.insert(0, {"localTradedAt": "2026-09-23", "closePrice": "9,999.00"})
+        self.assertEqual(self.fetch(naver_item(), daily)["value"], 2550.0)
+
+    def test_unavailable_or_malformed_daily_prices_return_none(self):
+        for response in (None, "not json", "null", '[null]', '[{}]'):
+            with self.subTest(response=response), patch("market_indices._make_request", side_effect=[
+                json.dumps({"datas": [naver_item()]}), response,
+            ]):
+                self.assertIsNone(market_indices._fetch_naver_korea_index_close("KOSPI", TRADING_DATE))
+
 
 class CloseSourceTests(unittest.TestCase):
     def test_naver_success_does_not_wait_for_yahoo(self):
-        with patch("market_indices._make_request", return_value=json.dumps({"datas": [naver_item()]})) as request:
+        with patch("market_indices._make_request", side_effect=[
+            json.dumps({"datas": [naver_item()]}), json.dumps(naver_daily_closes()),
+        ]) as request:
             quote = market_indices._fetch_korea_index_close("^KS11", "KOSPI", TRADING_DATE)
         self.assertEqual(quote["value"], 2550.0)
         self.assertIn("Naver", quote["source"])
-        self.assertEqual(request.call_count, 1)
-        self.assertIn("naver.com", request.call_args.args[0])
+        self.assertEqual(request.call_count, 2)
+        self.assertTrue(all("naver.com" in call.args[0] for call in request.call_args_list))
 
     def test_unavailable_naver_falls_back_to_confirmed_yahoo_close(self):
         response = json.dumps({"chart": {"result": [yahoo_chart()]}})
@@ -125,6 +168,47 @@ class CloseSourceTests(unittest.TestCase):
         self.assertEqual(quote["value"], 2550.0)
         self.assertEqual(quote["change_pct"], 2.0)
         self.assertIn("Yahoo", quote["source"])
+
+    def test_yahoo_fallback_requires_the_exact_previous_trading_day(self):
+        chart = yahoo_chart()
+        chart["timestamp"][0] -= 3 * 86400  # Monday is absent, only the older Friday remains.
+        with patch("market_indices._make_request", return_value=json.dumps({"chart": {"result": [chart]}})):
+            self.assertIsNone(market_indices._fetch_yahoo_korea_index_close("^KS11", "KOSPI", TRADING_DATE))
+
+    def test_yahoo_fallback_skips_weekends_and_holidays(self):
+        for trading_date, previous_date in (
+            ("2026-09-21", "2026-09-18"),
+            ("2026-09-28", "2026-09-23"),
+            ("2026-05-04", "2026-04-30"),  # Labor Day
+            ("2026-06-04", "2026-06-02"),  # Registered election closure
+            ("2026-06-09", "2026-06-08"),  # No substitute for Memorial Day
+            ("2027-01-04", "2026-12-30"),  # Year-end closure and New Year's Day
+        ):
+            chart = yahoo_chart()
+            close_at = datetime.fromisoformat(trading_date).replace(hour=15, minute=30, tzinfo=KST).timestamp()
+            chart["meta"]["regularMarketTime"] = close_at
+            chart["meta"]["currentTradingPeriod"]["regular"]["end"] = close_at
+            chart["timestamp"] = [
+                datetime.fromisoformat(previous_date).replace(hour=9, tzinfo=KST).timestamp(),
+                close_at - 6.5 * 3600,
+            ]
+            with self.subTest(trading_date=trading_date), patch("market_indices._make_request", return_value=json.dumps({"chart": {"result": [chart]}})):
+                quote = market_indices._fetch_yahoo_korea_index_close("^KS11", "KOSPI", trading_date)
+                self.assertEqual(quote["previous_close"], 2500.0)
+
+    def test_out_of_sync_naver_and_yahoo_prices_wait_then_recover(self):
+        pending = yahoo_chart()
+        pending["meta"]["regularMarketTime"] -= 1
+        responses = [
+            json.dumps({"datas": [naver_item()]}),
+            json.dumps(naver_daily_closes(value="2,549.00")),
+            json.dumps({"chart": {"result": [pending]}}),
+            json.dumps({"datas": [naver_item()]}),
+            json.dumps(naver_daily_closes()),
+        ]
+        with patch("market_indices._make_request", side_effect=responses):
+            self.assertIsNone(market_indices._fetch_korea_index_close("^KS11", "KOSPI", TRADING_DATE))
+            self.assertEqual(market_indices._fetch_korea_index_close("^KS11", "KOSPI", TRADING_DATE)["value"], 2550.0)
 
     def test_yahoo_fallback_rejects_stale_or_unconfirmed_candles(self):
         base = yahoo_chart()

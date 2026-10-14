@@ -16,6 +16,7 @@ import threading
 import math
 from datetime import datetime, timedelta, timezone
 import market_calendar
+import market_events
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 요청 기본값 (실패 시에도 빠르게 포기하도록 타임아웃/재시도를 짧게 유지)
@@ -599,8 +600,43 @@ def fetch_korea_market_indices():
     return result
 
 
+def _previous_korea_trading_date(trading_date):
+    """주식 일정의 휴장 규칙과 등록된 임시휴장을 적용합니다."""
+    day = datetime.strptime(trading_date, "%Y-%m-%d") - timedelta(days=1)
+    overrides = market_events.load_overrides()
+    holidays_by_year = {}
+    for _ in range(30):
+        if day.year not in holidays_by_year:
+            holidays_by_year[day.year] = market_events.holidays_for_year("KR", day.year, overrides)
+        if day.weekday() < 5 and day.date() not in holidays_by_year[day.year]:
+            return day.date().isoformat()
+        day -= timedelta(days=1)
+    return None
+
+
+def _fetch_naver_korea_index_daily_closes(code, trading_date):
+    """일별 시세에서 당일과 직전 거래일의 종가를 날짜로 선택합니다."""
+    response = _make_request(
+        f"https://m.stock.naver.com/api/index/{code}/price?pageSize=10",
+        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://m.stock.naver.com/",
+                 "Cache-Control": "no-cache"},
+        retries=1, timeout=3,
+    )
+    if not response:
+        return None
+    rows = json.loads(response)
+    if not isinstance(rows, list):
+        return None
+    daily = {row["localTradedAt"]: row["closePrice"] for row in rows}
+    dates = (trading_date, _previous_korea_trading_date(trading_date))
+    closes = tuple(float(str(daily[day]).replace(",", "")) for day in dates)
+    if any(not math.isfinite(price) or price <= 0 for price in closes):
+        return None
+    return closes
+
+
 def _fetch_naver_korea_index_close(code, trading_date):
-    """지연 없는 국내 지수에서 당일 장 종료가 확인된 값만 사용합니다."""
+    """장 종료 시세와 같은 날짜의 일별 종가가 일치할 때만 사용합니다."""
     url = f"https://polling.finance.naver.com/api/realtime/domestic/index/{code}"
     try:
         response = _make_request(url, headers={
@@ -643,6 +679,14 @@ def _fetch_naver_korea_index_close(code, trading_date):
         previous_close = value - change
         if not all(math.isfinite(price) and price > 0 for price in (value, previous_close)):
             return None
+        # CLOSE/시각이 먼저 갱신되어도 가격까지 확정되었다고 단정하지 않습니다.
+        daily_closes = _fetch_naver_korea_index_daily_closes(code, trading_date)
+        if (daily_closes is None
+                or round(value, 2) != round(daily_closes[0], 2)
+                or round(previous_close, 2) != round(daily_closes[1], 2)):
+            return None
+        value, previous_close = daily_closes
+        change = value - previous_close
         return {
             "name": code, "value": round(value, 2),
             "previous_close": round(previous_close, 2),
@@ -650,7 +694,7 @@ def _fetch_naver_korea_index_close(code, trading_date):
             "change_pct": round(change / previous_close * 100, 2),
             "date": trading_date, "source": "Naver Finance closing index",
         }
-    except (KeyError, AttributeError, TypeError, ValueError, OverflowError) as e:
+    except (KeyError, AttributeError, TypeError, ValueError, OverflowError, OSError) as e:
         print(f"Error fetching Naver confirmed close for {code}: {e}")
     return None
 
@@ -694,8 +738,8 @@ def _fetch_yahoo_korea_index_close(symbol, label, trading_date):
                 day = datetime.fromtimestamp(ts, kst).date().isoformat()
                 daily[day] = value
         value = daily.get(trading_date)
-        earlier = sorted(day for day in daily if day < trading_date)
-        previous_close = daily[earlier[-1]] if earlier else None
+        # 직전 거래일이 누락되면 더 오래된 종가로 등락률을 계산하지 않습니다.
+        previous_close = daily.get(_previous_korea_trading_date(trading_date))
         if any(not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0
                for price in (value, previous_close)):
             return None
