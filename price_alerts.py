@@ -37,8 +37,9 @@ def check_price_changes(scheduler, ticker, current_price, currency, subscribers,
                 point = "고가" if direction == "up" else "저가"
                 name = html.escape(str(data.get("name", ticker)))
                 unit = html.escape(str(currency))
+                pct_str = f"{magnitude:.2f}".rstrip("0").rstrip(".")
                 text = (
-                    f"<b>🔔 [{name}] {label} {threshold}% 도달</b>\n"
+                    f"<b>🔔 [{name}] {label} {pct_str}% 도달</b>\n"
                     f"종목: {html.escape(ticker)} · 거래일: {session}\n"
                     f"📌 전일 정규장 종가: {previous:.2f} {unit}\n"
                     f"📊 당일 {point}: <b>{extreme:.2f} {unit} ({change:+.2f}%)</b>\n"
